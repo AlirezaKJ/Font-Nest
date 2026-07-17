@@ -102,9 +102,14 @@
 
 <style>
 	.app-navigation {
+		position: sticky;
+		top: 0;
 		display: flex;
+		height: var(--app-content-height, 100dvh);
 		min-width: 0;
+		align-self: start;
 		flex-direction: column;
+		overflow-y: auto;
 		padding: var(--space-lg) var(--space-md) var(--space-md);
 		border-right: 1px solid var(--color-border);
 		background: var(--color-panel);
@@ -283,12 +288,13 @@
 
 	@media (max-width: 819px) {
 		.app-navigation {
-			position: sticky;
-			top: 0;
 			z-index: var(--z-sticky);
 			display: grid;
+			height: auto;
+			align-self: auto;
 			grid-template-columns: auto minmax(0, 1fr);
 			align-items: center;
+			overflow: visible;
 			padding: 8px 12px;
 			border-right: 0;
 			border-bottom: 1px solid var(--color-border);

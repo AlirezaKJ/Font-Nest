@@ -8,9 +8,13 @@
 		| 'filter'
 		| 'font'
 		| 'library'
+		| 'maximize'
+		| 'minimize'
 		| 'moon'
 		| 'monitor'
+		| 'more'
 		| 'refresh'
+		| 'restore'
 		| 'search'
 		| 'settings'
 		| 'sun'
@@ -76,6 +80,17 @@
 		<path d="m7 7 10 10M17 7 7 17" />
 	{:else if name === 'chevron'}
 		<path d="m9 6 6 6-6 6" />
+	{:else if name === 'more'}
+		<circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" />
+		<circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
+		<circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" />
+	{:else if name === 'minimize'}
+		<path d="M5 12h14" />
+	{:else if name === 'maximize'}
+		<rect x="5.5" y="5.5" width="13" height="13" rx="0.5" />
+	{:else if name === 'restore'}
+		<path d="M8.5 8.5V5.5h10v10h-3" />
+		<rect x="5.5" y="8.5" width="10" height="10" rx="0.5" />
 	{:else if name === 'font'}
 		<path d="M5 18.5 10.6 5.5h2.8L19 18.5M7.4 13h9.2" />
 	{/if}

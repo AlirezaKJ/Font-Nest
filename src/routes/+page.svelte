@@ -4,6 +4,7 @@
 	import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
 	import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
 	import AppNavigation, { type AppView } from '$lib/components/AppNavigation.svelte';
+	import AppTitleBar from '$lib/components/AppTitleBar.svelte';
 	import ConflictsView from '$lib/components/ConflictsView.svelte';
 	import FontInspector from '$lib/components/FontInspector.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -40,7 +41,6 @@
 	let theme = $state<ThemePreference>('dark');
 	let density = $state<DensityPreference>('comfortable');
 	let toast = $state<Toast | null>(null);
-	let searchInput = $state<HTMLInputElement>();
 	let previewFileInput = $state<HTMLInputElement>();
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -114,11 +114,11 @@
 			if (event.key === '/' && !isEditing) {
 				event.preventDefault();
 				view = 'library';
-				requestAnimationFrame(() => searchInput?.focus());
+				focusSearch();
 			} else if (event.key === 'Escape' && search) {
 				search = '';
 				displayLimit = PAGE_SIZE;
-				searchInput?.focus();
+				focusSearch();
 			}
 		};
 
@@ -260,6 +260,17 @@
 		displayLimit = PAGE_SIZE;
 	}
 
+	function updateGlobalSearch(value: string) {
+		view = 'library';
+		updateSearch(value);
+	}
+
+	function focusSearch() {
+		requestAnimationFrame(() => {
+			document.querySelector<HTMLInputElement>('[data-font-search]')?.focus();
+		});
+	}
+
 	function clearFilters() {
 		sourceFilter = 'All';
 		formatFilter = 'All';
@@ -396,6 +407,17 @@
 	onchange={previewFontFile}
 />
 
+<AppTitleBar
+	{search}
+	{loading}
+	{theme}
+	onSearch={updateGlobalSearch}
+	onNavigate={(nextView) => (view = nextView)}
+	onToggleTheme={toggleTheme}
+	onRefresh={() => void refreshCatalogue()}
+	onPreview={openPreviewFilePicker}
+/>
+
 <div class:compact={density === 'compact'} class="app-shell">
 	<AppNavigation
 		{view}
@@ -421,7 +443,8 @@
 										{catalogue.familyCount.toLocaleString()} families · {catalogue.faceCount.toLocaleString()}
 										faces
 										{#if catalogueMode === 'native'}
-											· scanned in {catalogue.scanDurationMs.toLocaleString()} ms
+											· scanned in {catalogue.scanDurationMs.toLocaleString()}
+											ms
 										{/if}
 									{:else if loading}
 										Reading the installed font catalogue…
@@ -433,15 +456,6 @@
 							<div class="header-actions">
 								<button
 									type="button"
-									class="icon-action"
-									onclick={toggleTheme}
-									aria-label="Toggle light and dark theme"
-									title="Toggle light and dark theme"
-								>
-									<Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
-								</button>
-								<button
-									type="button"
 									class="primary-action"
 									onclick={openPreviewFilePicker}
 								>
@@ -451,19 +465,6 @@
 						</div>
 
 						<div class="toolbar">
-							<label class="search-field">
-								<span class="sr-only">Search font families</span>
-								<Icon name="search" size={17} />
-								<input
-									bind:this={searchInput}
-									type="search"
-									value={search}
-									placeholder="Search families, styles, or formats"
-									oninput={(event) => updateSearch(event.currentTarget.value)}
-								/>
-								<kbd>/</kbd>
-							</label>
-
 							<details class="filter-menu">
 								<summary>
 									<Icon name="filter" size={16} />
@@ -546,7 +547,9 @@
 							{/each}
 						{:else if errorMessage}
 							<div class="state-view" role="alert">
-								<div class="state-icon error"><Icon name="alert" size={22} /></div>
+								<div class="state-icon error">
+									<Icon name="alert" size={22} />
+								</div>
 								<h2>Catalogue scan did not finish</h2>
 								<p>{errorMessage}</p>
 								<button type="button" onclick={() => void refreshCatalogue()}
@@ -662,22 +665,28 @@
 
 <style>
 	.app-shell {
+		--titlebar-height: 48px;
+		--app-content-height: calc(100dvh - var(--titlebar-height));
+
 		display: grid;
+		height: var(--app-content-height);
 		grid-template-columns: 208px minmax(0, 1fr);
-		min-height: 100vh;
+		min-height: 0;
+		overflow: hidden;
 		color: var(--color-text);
 		background: var(--color-bg);
 	}
 
 	main {
 		min-width: 0;
-		min-height: 100vh;
+		min-height: 0;
+		overflow: auto;
 	}
 
 	.library-workspace {
 		display: grid;
 		grid-template-columns: minmax(480px, 1fr) minmax(300px, 360px);
-		min-height: 100vh;
+		min-height: 100%;
 		background: var(--color-surface);
 	}
 
@@ -736,7 +745,6 @@
 		gap: 8px;
 	}
 
-	.icon-action,
 	.primary-action,
 	.filter-menu summary,
 	.state-view button,
@@ -755,19 +763,6 @@
 			transform var(--motion-fast);
 	}
 
-	.icon-action {
-		width: 36px;
-		padding: 0;
-		border: 1px solid var(--color-border);
-		color: var(--color-muted);
-		background: var(--color-control);
-	}
-
-	.icon-action:hover {
-		color: var(--color-text);
-		background: var(--color-selected);
-	}
-
 	.primary-action {
 		gap: 7px;
 		padding: 0 12px;
@@ -780,61 +775,15 @@
 		background: var(--color-accent-hover);
 	}
 
-	.icon-action:active,
 	.primary-action:active,
 	.filter-menu summary:active {
 		transform: translateY(1px);
 	}
 
 	.toolbar {
+		justify-content: flex-end;
 		gap: 8px;
 		margin-top: 15px;
-	}
-
-	.search-field {
-		position: relative;
-		display: flex;
-		min-width: 220px;
-		flex: 1;
-		align-items: center;
-		color: var(--color-muted);
-	}
-
-	.search-field > :global(svg) {
-		position: absolute;
-		left: 11px;
-		pointer-events: none;
-	}
-
-	.search-field input {
-		width: 100%;
-		height: 36px;
-		padding: 0 38px 0 36px;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		color: var(--color-text);
-		background: var(--color-control);
-		font-size: var(--text-body-sm);
-	}
-
-	.search-field input::placeholder {
-		color: var(--color-muted);
-		opacity: 1;
-	}
-
-	.search-field kbd {
-		position: absolute;
-		right: 8px;
-		display: grid;
-		width: 22px;
-		height: 22px;
-		place-items: center;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-xs);
-		color: var(--color-subtle);
-		background: var(--color-panel);
-		font: inherit;
-		font-size: var(--text-micro);
 	}
 
 	.filter-menu {
@@ -1203,11 +1152,12 @@
 		}
 
 		main {
-			min-height: calc(100vh - 57px);
+			height: calc(var(--app-content-height) - 57px);
+			min-height: 0;
 		}
 
 		.library-header {
-			top: 57px;
+			top: 0;
 		}
 	}
 

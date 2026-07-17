@@ -143,11 +143,15 @@
 
 <style>
 	.inspector {
+		position: sticky;
+		top: 0;
+		height: var(--app-content-height, 100dvh);
 		min-width: 0;
+		align-self: start;
+		overflow-y: auto;
 		padding: 20px;
 		border-left: 1px solid var(--color-border);
 		background: var(--color-raised);
-		overflow-y: auto;
 	}
 
 	header {
@@ -355,6 +359,10 @@
 
 	@media (max-width: 1119px) {
 		.inspector {
+			position: static;
+			height: auto;
+			align-self: auto;
+			overflow-y: visible;
 			border-top: 1px solid var(--color-border);
 			border-left: 0;
 		}
