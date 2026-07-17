@@ -17,6 +17,8 @@
 		"test:unit": "vitest",
 		"test": "vitest --run",
 		"typegen": "cargo test --manifest-path src-tauri/Cargo.toml export_bindings",
+		"fonts:refresh": "node scripts/refresh-google-fonts.mjs",
+		"fonts:fixture": "node scripts/refresh-google-fonts.mjs --fixture",
 		"rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
 		"rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
 		"rust:clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",

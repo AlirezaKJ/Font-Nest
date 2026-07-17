@@ -1,7 +1,14 @@
 import { invoke } from '@tauri-apps/api/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { greet, scanInstalledFonts } from './commands';
+import {
+	getGoogleFontDetails,
+	greet,
+	installGoogleFont,
+	listGoogleFonts,
+	prepareGoogleFontPreview,
+	scanInstalledFonts
+} from './commands';
 
 vi.mock('@tauri-apps/api/core', () => ({
 	invoke: vi.fn()
@@ -42,5 +49,68 @@ describe('scanInstalledFonts', () => {
 
 		await expect(scanInstalledFonts()).resolves.toEqual(response);
 		expect(invoke).toHaveBeenCalledWith('scan_installed_fonts');
+	});
+});
+
+describe('Google Fonts commands', () => {
+	beforeEach(() => {
+		vi.mocked(invoke).mockReset();
+	});
+
+	it('lists a bounded catalogue page without exposing source URLs', async () => {
+		const response = {
+			families: [],
+			total: 0,
+			offset: 0,
+			limit: 60,
+			snapshot: 'fixture'
+		};
+		vi.mocked(invoke).mockResolvedValue(response);
+
+		await expect(
+			listGoogleFonts({ query: 'serif', category: 'serif', offset: 0, limit: 60 })
+		).resolves.toEqual(response);
+		expect(invoke).toHaveBeenCalledWith('list_google_fonts', {
+			request: { query: 'serif', category: 'serif', offset: 0, limit: 60 }
+		});
+	});
+
+	it('loads details and previews through opaque provider IDs', async () => {
+		vi.mocked(invoke).mockResolvedValueOnce({ id: 'gf:inter', artifacts: [] });
+		vi.mocked(invoke).mockResolvedValueOnce({
+			artifactId: 'gf:inter:regular',
+			fontFamily: 'FontNestRemotePreview',
+			dataUrl: 'data:font/ttf;base64,AA=='
+		});
+
+		await getGoogleFontDetails('gf:inter');
+		await prepareGoogleFontPreview('gf:inter:regular');
+
+		expect(invoke).toHaveBeenNthCalledWith(1, 'get_google_font_details', {
+			familyId: 'gf:inter'
+		});
+		expect(invoke).toHaveBeenNthCalledWith(2, 'prepare_google_font_preview', {
+			artifactId: 'gf:inter:regular'
+		});
+	});
+
+	it('installs only explicitly selected manifest artifacts', async () => {
+		const response = {
+			familyId: 'gf:inter',
+			familyName: 'Inter',
+			installedArtifactIds: ['gf:inter:regular'],
+			alreadyInstalledArtifactIds: []
+		};
+		vi.mocked(invoke).mockResolvedValue(response);
+
+		await expect(installGoogleFont('gf:inter', ['gf:inter:regular'])).resolves.toEqual(
+			response
+		);
+		expect(invoke).toHaveBeenCalledWith('install_google_font', {
+			request: {
+				familyId: 'gf:inter',
+				artifactIds: ['gf:inter:regular']
+			}
+		});
 	});
 });

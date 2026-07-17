@@ -109,12 +109,15 @@
 			<div>
 				<h2 id="safety-title">Font safety</h2>
 				<p>
-					FontNest currently reads installed font metadata and opens preview files only.
+					FontNest installs only verified online font files after you review and confirm
+					them.
 				</p>
 			</div>
 			<div class="safety-note">
 				<Icon name="check" size={17} />
-				<span>System fonts remain protected. Uninstall is not enabled in this slice.</span>
+				<span
+					>Installs are per-user and recorded by FontNest. System fonts remain protected.</span
+				>
 			</div>
 		</section>
 

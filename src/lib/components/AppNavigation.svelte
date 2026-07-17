@@ -1,12 +1,12 @@
 <script lang="ts" module>
-	export type AppView = 'library' | 'duplicates' | 'settings';
+	export type AppView = 'library' | 'discover' | 'duplicates' | 'preview' | 'settings';
+	export type PinnedFamily = { id: string; name: string };
 </script>
 
 <script lang="ts">
-	import logoMarkup from '../../../assets/branding/logo.svg?raw';
-	import Icon from './Icon.svelte';
+	import { getDirectionalReorderPosition, type ReorderPosition } from '$lib/reorder';
 
-	const logoDataUrl = `data:image/svg+xml,${encodeURIComponent(logoMarkup)}`;
+	import Icon from './Icon.svelte';
 
 	let {
 		view,
@@ -14,7 +14,14 @@
 		conflictCount,
 		loading,
 		mode,
+		collapsed,
+		pinnedFamilies,
+		activeFamilyId,
 		onNavigate,
+		onOpenPreview,
+		onClosePreview,
+		onReorderPreview,
+		onToggle,
 		onRefresh
 	}: {
 		view: AppView;
@@ -22,81 +29,211 @@
 		conflictCount: number;
 		loading: boolean;
 		mode: 'native' | 'browser';
+		collapsed: boolean;
+		pinnedFamilies: PinnedFamily[];
+		activeFamilyId: string | null;
 		onNavigate: (view: AppView) => void;
+		onOpenPreview: (familyId: string) => void;
+		onClosePreview: (familyId: string) => void;
+		onReorderPreview: (
+			draggedFamilyId: string,
+			targetFamilyId: string,
+			position: ReorderPosition
+		) => void;
+		onToggle: () => void;
 		onRefresh: () => void;
 	} = $props();
+
+	let draggedFamilyId = $state<string | null>(null);
+	let dropTarget = $state<{ familyId: string; position: ReorderPosition } | null>(null);
+
+	function handlePreviewDragStart(event: DragEvent, familyId: string) {
+		draggedFamilyId = familyId;
+		dropTarget = null;
+		if (!event.dataTransfer) return;
+		event.dataTransfer.effectAllowed = 'move';
+		event.dataTransfer.setData('text/plain', familyId);
+	}
+
+	function handlePreviewDragOver(event: DragEvent, targetFamilyId: string) {
+		if (!draggedFamilyId) {
+			dropTarget = null;
+			return;
+		}
+		const position = getDirectionalReorderPosition(
+			pinnedFamilies.map((family) => family.id),
+			draggedFamilyId,
+			targetFamilyId
+		);
+		if (!position) {
+			dropTarget = null;
+			return;
+		}
+
+		event.preventDefault();
+		if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+		dropTarget = { familyId: targetFamilyId, position };
+	}
+
+	function handlePreviewDrop(event: DragEvent, targetFamilyId: string) {
+		event.preventDefault();
+		const transferredFamilyId = event.dataTransfer?.getData('text/plain') || null;
+		const droppedFamilyId = draggedFamilyId ?? transferredFamilyId;
+		if (droppedFamilyId) {
+			const position = getDirectionalReorderPosition(
+				pinnedFamilies.map((family) => family.id),
+				droppedFamilyId,
+				targetFamilyId
+			);
+			if (position) onReorderPreview(droppedFamilyId, targetFamilyId, position);
+		}
+		handlePreviewDragEnd();
+	}
+
+	function handlePreviewDragEnd() {
+		draggedFamilyId = null;
+		dropTarget = null;
+	}
 </script>
 
-<aside class="app-navigation" aria-label="Application navigation">
-	<div class="brand-lockup">
-		<img src={logoDataUrl} alt="" class="brand-mark" />
-		<div class="brand-copy">
-			<strong>FontNest</strong>
-			<span>Working type archive</span>
+<aside class:collapsed class="app-navigation" aria-label="Application navigation">
+	<div class="navigation-content">
+		<nav aria-label="Primary">
+			<p class="nav-group-label">Workspace</p>
+			<button
+				type="button"
+				class:active={view === 'library'}
+				aria-current={view === 'library' ? 'page' : undefined}
+				title={collapsed ? 'Library' : undefined}
+				onclick={() => onNavigate('library')}
+			>
+				<Icon name="library" size={17} />
+				<span class="nav-label">Library</span>
+				{#if familyCount > 0}<span class="nav-count">{familyCount}</span>{/if}
+			</button>
+			<button
+				type="button"
+				class:active={view === 'discover'}
+				aria-current={view === 'discover' ? 'page' : undefined}
+				title={collapsed ? 'Discover' : undefined}
+				onclick={() => onNavigate('discover')}
+			>
+				<Icon name="font" size={17} />
+				<span class="nav-label">Discover</span>
+			</button>
+			<button
+				type="button"
+				class:active={view === 'duplicates'}
+				aria-current={view === 'duplicates' ? 'page' : undefined}
+				title={collapsed ? 'Conflicts' : undefined}
+				onclick={() => onNavigate('duplicates')}
+			>
+				<Icon name="duplicates" size={17} />
+				<span class="nav-label">Conflicts</span>
+				{#if conflictCount > 0}<span class="nav-count warning">{conflictCount}</span>{/if}
+			</button>
+		</nav>
+
+		{#if pinnedFamilies.length}
+			<nav class="preview-navigation" aria-label="Saved font previews. Drag to reorder.">
+				<p class="nav-group-label">Saved previews</p>
+				{#each pinnedFamilies as family (family.id)}
+					<div
+						class:active={view === 'preview' && activeFamilyId === family.id}
+						class:dragging={draggedFamilyId === family.id}
+						class:drop-before={dropTarget?.familyId === family.id &&
+							dropTarget.position === 'before'}
+						class:drop-after={dropTarget?.familyId === family.id &&
+							dropTarget.position === 'after'}
+						class="preview-nav-item"
+						draggable="true"
+						role="group"
+						aria-label={`${family.name} saved preview`}
+						ondragstart={(event) => handlePreviewDragStart(event, family.id)}
+						ondragover={(event) => handlePreviewDragOver(event, family.id)}
+						ondrop={(event) => handlePreviewDrop(event, family.id)}
+						ondragend={handlePreviewDragEnd}
+					>
+						<button
+							type="button"
+							class:active={view === 'preview' && activeFamilyId === family.id}
+							class="preview-nav-open"
+							aria-current={view === 'preview' && activeFamilyId === family.id
+								? 'page'
+								: undefined}
+							title={collapsed ? family.name : undefined}
+							onclick={() => onOpenPreview(family.id)}
+						>
+							<Icon name="font" size={17} />
+							<span class="nav-label">{family.name}</span>
+						</button>
+						<button
+							type="button"
+							class="preview-nav-close"
+							aria-label={`Close saved preview for ${family.name}`}
+							title="Close saved preview"
+							onclick={() => onClosePreview(family.id)}
+						>
+							<Icon name="close" size={14} />
+						</button>
+					</div>
+				{/each}
+			</nav>
+		{/if}
+
+		<nav class="system-navigation" aria-label="System navigation">
+			<p class="nav-group-label">System</p>
+			<button
+				type="button"
+				class:active={view === 'settings'}
+				aria-current={view === 'settings' ? 'page' : undefined}
+				title={collapsed ? 'Settings' : undefined}
+				onclick={() => onNavigate('settings')}
+			>
+				<Icon name="settings" size={17} />
+				<span class="nav-label">Settings</span>
+			</button>
+		</nav>
+
+		<div class="catalogue-status">
+			<div class="status-line">
+				<span class:scanning={loading} class="status-indicator"></span>
+				<strong
+					>{loading
+						? 'Scanning catalogue'
+						: mode === 'native'
+							? 'Catalogue ready'
+							: 'Browser preview'}</strong
+				>
+				<button
+					type="button"
+					class="icon-button"
+					disabled={loading}
+					aria-label="Scan fonts again"
+					title="Scan fonts again"
+					onclick={onRefresh}
+				>
+					<Icon name="refresh" size={15} />
+				</button>
+			</div>
+			<p>
+				{mode === 'native'
+					? `${familyCount.toLocaleString()} installed families`
+					: 'Sample data for UI development'}
+			</p>
 		</div>
 	</div>
 
-	<nav aria-label="Primary">
-		<p class="nav-group-label">Workspace</p>
+	<div class="sidebar-edge-zone">
 		<button
 			type="button"
-			class:active={view === 'library'}
-			aria-current={view === 'library' ? 'page' : undefined}
-			onclick={() => onNavigate('library')}
+			class="sidebar-toggle"
+			aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+			title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+			onclick={onToggle}
 		>
-			<Icon name="library" size={17} />
-			<span>Library</span>
-			{#if familyCount > 0}<span class="nav-count">{familyCount}</span>{/if}
+			<span class:collapsed class="toggle-icon"><Icon name="chevron" size={14} /></span>
 		</button>
-		<button
-			type="button"
-			class:active={view === 'duplicates'}
-			aria-current={view === 'duplicates' ? 'page' : undefined}
-			onclick={() => onNavigate('duplicates')}
-		>
-			<Icon name="duplicates" size={17} />
-			<span>Conflicts</span>
-			{#if conflictCount > 0}<span class="nav-count warning">{conflictCount}</span>{/if}
-		</button>
-
-		<p class="nav-group-label settings-label">System</p>
-		<button
-			type="button"
-			class:active={view === 'settings'}
-			aria-current={view === 'settings' ? 'page' : undefined}
-			onclick={() => onNavigate('settings')}
-		>
-			<Icon name="settings" size={17} />
-			<span>Settings</span>
-		</button>
-	</nav>
-
-	<div class="catalogue-status">
-		<div class="status-line">
-			<span class:scanning={loading} class="status-indicator"></span>
-			<strong
-				>{loading
-					? 'Scanning catalogue'
-					: mode === 'native'
-						? 'Catalogue ready'
-						: 'Browser preview'}</strong
-			>
-			<button
-				type="button"
-				class="icon-button"
-				disabled={loading}
-				aria-label="Scan fonts again"
-				title="Scan fonts again"
-				onclick={onRefresh}
-			>
-				<Icon name="refresh" size={15} />
-			</button>
-		</div>
-		<p>
-			{mode === 'native'
-				? `${familyCount.toLocaleString()} installed families`
-				: 'Sample data for UI development'}
-		</p>
 	</div>
 </aside>
 
@@ -104,55 +241,101 @@
 	.app-navigation {
 		position: sticky;
 		top: 0;
-		display: flex;
+		z-index: var(--z-sticky);
 		height: var(--app-content-height, 100dvh);
 		min-width: 0;
 		align-self: start;
-		flex-direction: column;
-		overflow-y: auto;
-		padding: var(--space-lg) var(--space-md) var(--space-md);
+		overflow: visible;
 		border-right: 1px solid var(--color-border);
 		background: var(--color-panel);
 	}
 
-	.brand-lockup {
+	.navigation-content {
 		display: flex;
-		align-items: center;
-		gap: 10px;
-		padding: 0 8px;
-	}
-
-	.brand-mark {
-		width: 32px;
-		height: 32px;
-		object-fit: contain;
-		filter: var(--logo-filter);
-	}
-
-	.brand-copy {
-		display: grid;
+		height: 100%;
 		min-width: 0;
-		gap: 2px;
+		flex-direction: column;
+		overflow-x: hidden;
+		overflow-y: auto;
+		padding: var(--space-lg) var(--space-md) var(--space-md);
 	}
 
-	.brand-copy strong {
-		font-size: var(--text-title);
-		line-height: 1.2;
-		letter-spacing: -0.02em;
+	.sidebar-edge-zone {
+		position: absolute;
+		top: 0;
+		right: -7px;
+		z-index: 1;
+		width: 14px;
+		height: 100%;
 	}
 
-	.brand-copy span {
-		overflow: hidden;
+	.sidebar-toggle {
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		display: grid;
+		width: 26px;
+		height: 38px;
+		flex: none;
+		place-items: center;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-shell);
 		color: var(--color-muted);
-		font-size: var(--text-micro);
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		background: var(--color-panel);
+		box-shadow: 0 4px 16px color-mix(in srgb, var(--color-bg) 72%, transparent);
+		cursor: pointer;
+		opacity: 0;
+		pointer-events: none;
+		transform: translate(-50%, -50%) scale(0.9);
+		transition:
+			opacity var(--motion-fast),
+			color var(--motion-fast),
+			background var(--motion-fast),
+			border-color var(--motion-fast),
+			transform var(--motion-fast);
+	}
+
+	.app-navigation:hover .sidebar-toggle,
+	.app-navigation:focus-within .sidebar-toggle,
+	.sidebar-toggle:focus-visible {
+		opacity: 1;
+		pointer-events: auto;
+		transform: translate(-50%, -50%) scale(1);
+	}
+
+	.sidebar-toggle:hover {
+		color: var(--color-text);
+		border-color: var(--color-subtle);
+		background: var(--color-control);
+	}
+
+	.sidebar-toggle:active {
+		transform: translate(-50%, -50%) scale(0.94);
+	}
+
+	.toggle-icon {
+		display: flex;
+		transform: rotate(180deg);
+		transition: transform var(--motion-standard);
+	}
+
+	.toggle-icon.collapsed {
+		transform: rotate(0deg);
 	}
 
 	nav {
 		display: grid;
 		gap: 3px;
-		margin-top: 28px;
+		margin-top: 12px;
+	}
+
+	.preview-navigation,
+	.system-navigation {
+		margin-top: 16px;
+	}
+
+	.preview-navigation {
+		gap: 0;
 	}
 
 	.nav-group-label {
@@ -162,10 +345,6 @@
 		font-weight: 650;
 		letter-spacing: 0.045em;
 		text-transform: uppercase;
-	}
-
-	.settings-label {
-		margin-top: 16px;
 	}
 
 	nav button {
@@ -201,6 +380,96 @@
 	nav button.active {
 		color: var(--color-text);
 		background: var(--color-selected);
+	}
+
+	.preview-nav-item {
+		position: relative;
+		min-width: 0;
+		padding-block: 1.5px;
+		user-select: none;
+		transition: opacity var(--motion-fast);
+	}
+
+	.preview-nav-item.dragging {
+		opacity: 0.46;
+	}
+
+	.preview-nav-item.drop-before::before,
+	.preview-nav-item.drop-after::after {
+		position: absolute;
+		right: 8px;
+		left: 8px;
+		z-index: 2;
+		height: 2px;
+		border-radius: var(--radius-shell);
+		background: var(--color-accent);
+		content: '';
+		pointer-events: none;
+	}
+
+	.preview-nav-item.drop-before::before {
+		top: 0;
+	}
+
+	.preview-nav-item.drop-after::after {
+		bottom: 0;
+	}
+
+	.preview-nav-open {
+		width: 100%;
+		padding-right: 40px;
+		cursor: grab;
+	}
+
+	.preview-nav-open:active,
+	.preview-nav-item.dragging .preview-nav-open {
+		cursor: grabbing;
+	}
+
+	.preview-nav-item:hover .preview-nav-open:not(.active),
+	.preview-nav-item:focus-within .preview-nav-open:not(.active) {
+		color: var(--color-text);
+		background: var(--color-hover);
+	}
+
+	nav .preview-nav-close {
+		position: absolute;
+		top: 50%;
+		right: 6px;
+		display: grid;
+		grid-template-columns: 1fr;
+		width: 26px;
+		min-height: 26px;
+		place-items: center;
+		padding: 0;
+		border: 0;
+		border-radius: var(--radius-sm);
+		color: var(--color-muted);
+		background: transparent;
+		opacity: 0;
+		pointer-events: none;
+		transform: translateY(-50%);
+		transition:
+			color var(--motion-fast),
+			background var(--motion-fast),
+			opacity var(--motion-fast);
+	}
+
+	.preview-nav-item:hover .preview-nav-close,
+	.preview-nav-item:focus-within .preview-nav-close,
+	.preview-nav-item.active .preview-nav-close,
+	.preview-nav-close:focus-visible {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	nav .preview-nav-close:hover {
+		color: var(--color-text);
+		background: var(--color-raised);
+	}
+
+	nav .preview-nav-close:active {
+		transform: translateY(-50%) scale(0.92);
 	}
 
 	.nav-count {
@@ -280,6 +549,44 @@
 		opacity: 0.5;
 	}
 
+	@media (min-width: 820px) {
+		.navigation-content {
+			transition: padding var(--motion-standard);
+		}
+
+		.collapsed .navigation-content {
+			padding-inline: 8px;
+		}
+
+		.collapsed nav button {
+			display: flex;
+			justify-content: center;
+			padding-inline: 0;
+		}
+
+		.collapsed .preview-nav-close {
+			display: none;
+		}
+
+		.collapsed .nav-label,
+		.collapsed .nav-count,
+		.collapsed .nav-group-label,
+		.collapsed .status-line strong,
+		.collapsed .catalogue-status p {
+			display: none;
+		}
+
+		.collapsed .catalogue-status {
+			padding-inline: 0;
+		}
+
+		.collapsed .status-line {
+			display: flex;
+			flex-direction: column;
+			gap: 5px;
+		}
+	}
+
 	@keyframes status-pulse {
 		50% {
 			opacity: 0.45;
@@ -288,38 +595,63 @@
 
 	@media (max-width: 819px) {
 		.app-navigation {
-			z-index: var(--z-sticky);
-			display: grid;
 			height: auto;
 			align-self: auto;
-			grid-template-columns: auto minmax(0, 1fr);
-			align-items: center;
-			overflow: visible;
-			padding: 8px 12px;
 			border-right: 0;
 			border-bottom: 1px solid var(--color-border);
 		}
 
-		.brand-copy,
+		.navigation-content {
+			display: flex;
+			width: 100%;
+			height: auto;
+			flex-direction: row;
+			overflow-x: auto;
+			overflow-y: hidden;
+			padding: 8px 12px;
+		}
+
 		.nav-group-label,
 		.catalogue-status {
 			display: none;
 		}
 
-		.brand-lockup {
-			padding: 0;
-		}
-
-		.brand-mark {
-			width: 30px;
-			height: 30px;
+		.sidebar-edge-zone {
+			display: none;
 		}
 
 		nav {
 			display: flex;
-			justify-content: flex-end;
+			justify-content: flex-start;
 			gap: 4px;
 			margin: 0;
+			overflow-x: auto;
+		}
+
+		.preview-navigation {
+			margin-left: 4px;
+		}
+
+		.preview-nav-item.drop-before::before,
+		.preview-nav-item.drop-after::after {
+			top: 6px;
+			bottom: 6px;
+			width: 2px;
+			height: auto;
+		}
+
+		.preview-nav-item.drop-before::before {
+			right: auto;
+			left: -2px;
+		}
+
+		.preview-nav-item.drop-after::after {
+			right: -2px;
+			left: auto;
+		}
+
+		.system-navigation {
+			margin-left: 4px;
 		}
 
 		nav button {
@@ -336,7 +668,7 @@
 	}
 
 	@media (max-width: 540px) {
-		nav button span:not(.nav-count) {
+		nav button .nav-label {
 			display: none;
 		}
 	}

@@ -6,13 +6,16 @@
 	import AppNavigation, { type AppView } from '$lib/components/AppNavigation.svelte';
 	import AppTitleBar from '$lib/components/AppTitleBar.svelte';
 	import ConflictsView from '$lib/components/ConflictsView.svelte';
+	import DiscoverView from '$lib/components/DiscoverView.svelte';
 	import FontInspector from '$lib/components/FontInspector.svelte';
+	import FontPreviewView from '$lib/components/FontPreviewView.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import SettingsView, {
 		type DensityPreference,
 		type ThemePreference
 	} from '$lib/components/SettingsView.svelte';
 	import { createBrowserCatalogue } from '$lib/catalogue/browser-catalogue';
+	import { reorderIds, type ReorderPosition } from '$lib/reorder';
 	import { scanInstalledFonts } from '$lib/tauri/commands';
 
 	const PAGE_SIZE = 120;
@@ -40,6 +43,8 @@
 	let previewWeight = $state(400);
 	let theme = $state<ThemePreference>('dark');
 	let density = $state<DensityPreference>('comfortable');
+	let sidebarCollapsed = $state(false);
+	let pinnedFamilyIds = $state<string[]>([]);
 	let toast = $state<Toast | null>(null);
 	let previewFileInput = $state<HTMLInputElement>();
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -86,6 +91,7 @@
 	let selectedFamily = $derived.by(() => {
 		const selected =
 			catalogue?.families.find((family) => family.id === selectedFamilyId) ?? null;
+		if (view === 'preview') return selected;
 		if (
 			filteredFamilies.length &&
 			!filteredFamilies.some((family) => family.id === selected?.id)
@@ -96,6 +102,11 @@
 	});
 	let conflictFamilies = $derived(
 		catalogue?.families.filter((family) => family.hasConflict) ?? []
+	);
+	let pinnedFamilies = $derived.by(() =>
+		pinnedFamilyIds
+			.map((familyId) => catalogue?.families.find((family) => family.id === familyId))
+			.filter((family): family is FontFamilySummary => Boolean(family))
 	);
 
 	onMount(() => {
@@ -139,6 +150,8 @@
 				theme?: ThemePreference;
 				density?: DensityPreference;
 				previewText?: string;
+				sidebarCollapsed?: boolean;
+				pinnedFamilyIds?: unknown;
 			};
 			if (saved.theme && ['system', 'light', 'dark'].includes(saved.theme))
 				theme = saved.theme;
@@ -146,13 +159,28 @@
 				density = saved.density;
 			}
 			if (saved.previewText?.trim()) previewText = saved.previewText;
+			if (typeof saved.sidebarCollapsed === 'boolean') {
+				sidebarCollapsed = saved.sidebarCollapsed;
+			}
+			if (Array.isArray(saved.pinnedFamilyIds)) {
+				pinnedFamilyIds = [
+					...new Set(
+						saved.pinnedFamilyIds.filter(
+							(value): value is string => typeof value === 'string'
+						)
+					)
+				];
+			}
 		} catch {
 			localStorage.removeItem(PREFERENCES_KEY);
 		}
 	}
 
 	function savePreferences() {
-		localStorage.setItem(PREFERENCES_KEY, JSON.stringify({ theme, density, previewText }));
+		localStorage.setItem(
+			PREFERENCES_KEY,
+			JSON.stringify({ theme, density, previewText, sidebarCollapsed, pinnedFamilyIds })
+		);
 	}
 
 	function applyTheme() {
@@ -184,6 +212,11 @@
 
 	function setPreviewText(value: string) {
 		previewText = value;
+		savePreferences();
+	}
+
+	function toggleSidebar() {
+		sidebarCollapsed = !sidebarCollapsed;
 		savePreferences();
 	}
 
@@ -234,6 +267,56 @@
 		if (family) previewWeight = nearestWeight(family.weights, previewWeight);
 	}
 
+	function openFamilyPreview(familyId: string) {
+		const family = catalogue?.families.find((candidate) => candidate.id === familyId);
+		if (!family) return;
+
+		selectFamily(familyId);
+		view = 'preview';
+		if (!pinnedFamilyIds.includes(familyId)) {
+			pinnedFamilyIds = [...pinnedFamilyIds, familyId];
+			savePreferences();
+			showToast(`${family.name} added to saved previews.`, 'success');
+		}
+	}
+
+	function closeFamilyPreview(familyId: string) {
+		if (!pinnedFamilyIds.includes(familyId)) return;
+
+		const family = catalogue?.families.find((candidate) => candidate.id === familyId);
+		pinnedFamilyIds = pinnedFamilyIds.filter((candidate) => candidate !== familyId);
+		if (view === 'preview' && selectedFamilyId === familyId) view = 'library';
+		savePreferences();
+		showToast(`${family?.name ?? 'Preview'} closed.`, 'success');
+	}
+
+	function reorderPinnedFamily(
+		draggedFamilyId: string,
+		targetFamilyId: string,
+		position: ReorderPosition
+	) {
+		const reordered = reorderIds(pinnedFamilyIds, draggedFamilyId, targetFamilyId, position);
+		if (reordered.every((familyId, index) => familyId === pinnedFamilyIds[index])) return;
+		pinnedFamilyIds = reordered;
+		savePreferences();
+	}
+
+	function toggleSelectedFamilyPinned() {
+		const family = selectedFamily;
+		if (!family) return;
+		const isPinned = pinnedFamilyIds.includes(family.id);
+		pinnedFamilyIds = isPinned
+			? pinnedFamilyIds.filter((familyId) => familyId !== family.id)
+			: [...pinnedFamilyIds, family.id];
+		savePreferences();
+		showToast(
+			isPinned
+				? `${family.name} removed from saved previews.`
+				: `${family.name} added to saved previews.`,
+			'success'
+		);
+	}
+
 	function inspectConflict(familyId: string) {
 		selectFamily(familyId);
 		view = 'library';
@@ -252,7 +335,7 @@
 		const next = renderedFamilies[nextIndex];
 		if (!next) return;
 		selectFamily(next.id);
-		document.querySelectorAll<HTMLButtonElement>('.font-row')[nextIndex]?.focus();
+		document.querySelectorAll<HTMLButtonElement>('.font-row-select')[nextIndex]?.focus();
 	}
 
 	function updateSearch(value: string) {
@@ -418,14 +501,25 @@
 	onPreview={openPreviewFilePicker}
 />
 
-<div class:compact={density === 'compact'} class="app-shell">
+<div
+	class:compact={density === 'compact'}
+	class:sidebar-collapsed={sidebarCollapsed}
+	class="app-shell"
+>
 	<AppNavigation
 		{view}
 		familyCount={catalogue?.familyCount ?? 0}
 		conflictCount={catalogue?.conflictCount ?? 0}
 		{loading}
 		mode={catalogueMode}
+		collapsed={sidebarCollapsed}
+		{pinnedFamilies}
+		activeFamilyId={view === 'preview' ? (selectedFamily?.id ?? null) : null}
 		onNavigate={(nextView) => (view = nextView)}
+		onOpenPreview={openFamilyPreview}
+		onClosePreview={closeFamilyPreview}
+		onReorderPreview={reorderPinnedFamily}
+		onToggle={toggleSidebar}
 		onRefresh={() => void refreshCatalogue()}
 	/>
 
@@ -527,7 +621,7 @@
 						<span>Family</span><span>Preview</span><span>Styles</span>
 					</div>
 
-					<div class="font-list" role="listbox" aria-label="Font families">
+					<div class="font-list" aria-label="Font families">
 						{#if loading && !catalogue}
 							{#each SKELETON_ROWS as index (index)}
 								<div class="font-row skeleton-row" aria-hidden="true">
@@ -585,31 +679,52 @@
 							</div>
 						{:else}
 							{#each renderedFamilies as family, index (family.id)}
-								<button
-									type="button"
+								<div
 									class:selected={selectedFamily?.id === family.id}
 									class="font-row"
-									role="option"
-									aria-selected={selectedFamily?.id === family.id}
-									tabindex={selectedFamily?.id === family.id ? 0 : -1}
-									onclick={() => selectFamily(family.id)}
-									onkeydown={(event) => handleRowKeydown(event, index)}
 								>
-									<span class="family-cell">
-										<strong>{family.name}</strong>
-										<small>{familyMeta(family)}</small>
-									</span>
-									<span class="preview-cell" style={familyPreviewStyle(family)}>
-										{previewText || DEFAULT_PREVIEW}
-									</span>
-									<span class="style-cell">
-										{family.faceCount}
-										{family.faceCount === 1 ? 'style' : 'styles'}
-										{#if family.hasConflict}<small
-												><Icon name="alert" size={12} /> Conflict</small
-											>{/if}
-									</span>
-								</button>
+									<button
+										type="button"
+										class="font-row-select"
+										aria-pressed={selectedFamily?.id === family.id}
+										tabindex={selectedFamily?.id === family.id ? 0 : -1}
+										onclick={() => selectFamily(family.id)}
+										onkeydown={(event) => handleRowKeydown(event, index)}
+									>
+										<span class="family-cell">
+											<strong>{family.name}</strong>
+											<small>{familyMeta(family)}</small>
+										</span>
+										<span
+											class="preview-cell"
+											style={familyPreviewStyle(family)}
+										>
+											{previewText || DEFAULT_PREVIEW}
+										</span>
+										<span class="style-cell">
+											{family.faceCount}
+											{family.faceCount === 1 ? 'style' : 'styles'}
+											{#if family.hasConflict}<small
+													><Icon name="alert" size={12} /> Conflict</small
+												>{/if}
+										</span>
+									</button>
+									<button
+										type="button"
+										class:pinned={pinnedFamilyIds.includes(family.id)}
+										class="preview-page-action"
+										tabindex={selectedFamily?.id === family.id ? 0 : -1}
+										aria-label={pinnedFamilyIds.includes(family.id)
+											? `Open saved preview for ${family.name}`
+											: `Save and open preview for ${family.name}`}
+										title={pinnedFamilyIds.includes(family.id)
+											? 'Open saved preview'
+											: 'Save and open preview'}
+										onclick={() => openFamilyPreview(family.id)}
+									>
+										<Icon name="bookmark" size={16} />
+									</button>
+								</div>
 							{/each}
 							{#if renderedFamilies.length < filteredFamilies.length}
 								<div class="load-more-row">
@@ -638,8 +753,27 @@
 					onPreviewWeight={(value) => (previewWeight = value)}
 				/>
 			</section>
+		{:else if view === 'discover'}
+			<DiscoverView
+				installedFamilyNames={catalogue?.families.map((family) => family.name) ?? []}
+				onInstalled={refreshCatalogue}
+				onToast={showToast}
+			/>
 		{:else if view === 'duplicates'}
 			<ConflictsView families={conflictFamilies} onInspect={inspectConflict} />
+		{:else if view === 'preview'}
+			<FontPreviewView
+				family={selectedFamily}
+				{previewText}
+				{previewSize}
+				{previewWeight}
+				pinned={selectedFamily ? pinnedFamilyIds.includes(selectedFamily.id) : false}
+				onBack={() => (view = 'library')}
+				onTogglePinned={toggleSelectedFamilyPinned}
+				onPreviewText={setPreviewText}
+				onPreviewSize={(value) => (previewSize = value)}
+				onPreviewWeight={(value) => (previewWeight = value)}
+			/>
 		{:else}
 			<SettingsView
 				{theme}
@@ -675,6 +809,11 @@
 		overflow: hidden;
 		color: var(--color-text);
 		background: var(--color-bg);
+		transition: grid-template-columns var(--motion-standard);
+	}
+
+	.app-shell.sidebar-collapsed {
+		grid-template-columns: 56px minmax(0, 1fr);
 	}
 
 	main {
@@ -882,7 +1021,8 @@
 	}
 
 	.table-head,
-	.font-row {
+	.font-row-select,
+	.skeleton-row {
 		display: grid;
 		grid-template-columns: minmax(150px, 0.9fr) minmax(210px, 1.45fr) 86px;
 		align-items: center;
@@ -906,27 +1046,75 @@
 	}
 
 	.font-row {
-		width: 100%;
-		min-height: 68px;
-		padding: 9px 24px;
-		border: 0;
+		position: relative;
 		border-bottom: 1px solid var(--color-border);
-		color: var(--color-text);
-		background: transparent;
-		font: inherit;
-		text-align: left;
-		cursor: pointer;
 		content-visibility: auto;
 		contain-intrinsic-size: auto 68px;
 		transition: background var(--motion-fast);
 	}
 
-	.font-row:hover {
+	.font-row-select {
+		width: 100%;
+		min-height: 68px;
+		padding: 9px 68px 9px 24px;
+		border: 0;
+		color: var(--color-text);
+		background: transparent;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.font-row:hover,
+	.font-row:focus-within {
 		background: var(--color-hover);
 	}
 
 	.font-row.selected {
 		background: var(--color-selected);
+	}
+
+	.preview-page-action {
+		position: absolute;
+		top: 50%;
+		right: 20px;
+		display: grid;
+		width: 32px;
+		height: 32px;
+		place-items: center;
+		border: 0;
+		border-radius: var(--radius-md);
+		color: var(--color-muted);
+		background: var(--color-raised);
+		cursor: pointer;
+		opacity: 0;
+		transform: translate(4px, -50%);
+		transition:
+			color var(--motion-fast),
+			background var(--motion-fast),
+			opacity var(--motion-fast),
+			transform var(--motion-fast);
+	}
+
+	.font-row:hover .preview-page-action,
+	.font-row:focus-within .preview-page-action,
+	.font-row.selected .preview-page-action,
+	.preview-page-action.pinned {
+		opacity: 1;
+		transform: translate(0, -50%);
+	}
+
+	.preview-page-action:hover {
+		color: var(--color-text);
+		background: var(--color-control);
+	}
+
+	.preview-page-action.pinned {
+		color: var(--color-text);
+	}
+
+	.preview-page-action.pinned :global(svg) {
+		fill: currentColor;
 	}
 
 	.family-cell,
@@ -978,10 +1166,14 @@
 		color: var(--color-warning);
 	}
 
-	.compact .font-row {
+	.compact .font-row-select,
+	.compact .skeleton-row {
 		min-height: 52px;
 		padding-top: 6px;
 		padding-bottom: 6px;
+	}
+
+	.compact .font-row {
 		contain-intrinsic-size: auto 52px;
 	}
 
@@ -990,7 +1182,15 @@
 	}
 
 	.skeleton-row {
+		min-height: 68px;
+		padding: 9px 24px;
 		cursor: wait;
+	}
+
+	.compact .skeleton-row {
+		min-height: 52px;
+		padding-top: 6px;
+		padding-bottom: 6px;
 	}
 
 	.skeleton {
@@ -1180,10 +1380,23 @@
 		}
 
 		.table-head,
-		.font-row {
+		.font-row-select,
+		.skeleton-row {
 			grid-template-columns: minmax(120px, 0.8fr) minmax(170px, 1.2fr);
-			padding-right: 16px;
 			padding-left: 16px;
+		}
+
+		.table-head,
+		.skeleton-row {
+			padding-right: 16px;
+		}
+
+		.font-row-select {
+			padding-right: 56px;
+		}
+
+		.preview-page-action {
+			right: 12px;
 		}
 
 		.table-head span:last-child,
@@ -1223,7 +1436,8 @@
 		}
 
 		.table-head,
-		.font-row {
+		.font-row-select,
+		.skeleton-row {
 			grid-template-columns: 1fr;
 		}
 

@@ -3,7 +3,7 @@ title: FontNest Todos
 type: todo
 status: active
 created: 2026-06-05
-updated: 2026-07-17
+updated: 2026-07-18
 tags:
     - project
     - todo
@@ -19,7 +19,7 @@ tags:
 > Build one thin Windows-first vertical slice before expanding features: scaffold Tauri/SvelteKit → generate one Rust DTO → create the first SQLite migration → discover and persist font families → stream catalogue batches to a virtualized read-only list. No install/uninstall work until this path is tested end to end.
 
 > [!success] Usable dashboard slice — 2026-07-17
-> The Svelte/Tauri shell, typed catalogue DTOs, native `fontdb` discovery, responsive Quiet Ledger dashboard, search/filter controls, family inspector, potential-conflict view, and persisted appearance settings are implemented. SQLite persistence, streamed batches, true virtualization, and guarded font management remain the next vertical-slice work.
+> The Svelte/Tauri shell, typed catalogue DTOs, native `fontdb` discovery, responsive Quiet Ledger dashboard, search/filter controls, family inspector, potential-conflict view, and persisted appearance settings are implemented. A guarded Google Fonts discovery, preview, and Windows per-user install slice was added on 2026-07-18. Installed-catalogue persistence, streamed batches, true virtualization, and managed uninstall remain future work.
 
 Related: [[FontNest]] · [[Font Explorer Doc]]
 
@@ -76,13 +76,14 @@ Related: [[FontNest]] · [[Font Explorer Doc]]
     - [ ] `FontFile` — path, source, format, size, modified time, optional content hash.
     - [ ] `FontFace` — face index, names, weight, width, style, variable axes.
     - [x] `FontFamily` — private native grouping used to produce user-facing family summaries.
-    - [ ] `ManagedInstallation` — proof FontNest may uninstall a file.
+    - [x] `ManagedInstallation` — proof FontNest may uninstall a file.
     - [ ] `DuplicateGroup` — exact duplicate or semantic conflict.
 - [x] Add serde catalogue DTOs separately from the native family grouping.
 - [x] Generate TypeScript DTOs with `ts-rs`; generated files are never edited manually.
 - [ ] Add SQLite through Rust-owned `rusqlite`:
     - [ ] Schema and migrations for files, faces, families, installations, duplicates, and scan state.
     - [ ] Repository boundaries for catalogue and managed installations.
+        - [x] Phase 1: Rust-owned SQLite repository for Google Fonts managed installations.
     - [ ] Transactional catalogue reconciliation.
 - [x] Font discovery through `fontdb`:
     - [x] Handle Windows system + per-user Microsoft font locations.
@@ -104,6 +105,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]]
     - [ ] Install targets: `.ttf`, `.otf`, `.ttc`, `.otc` where supported by the OS.
     - [ ] Preview/import only: `.woff`, `.woff2`.
 - [ ] `install_font` — copy to app-managed dir + register with OS (per-user, no admin).
+    - [x] Phase 1: verified Google Fonts `.ttf` install for the current Windows user.
 - [ ] `uninstall_font(installation_id)` — require a valid managed-installation ledger entry.
 - [ ] `reveal_font_file(file_id)` — resolve the trusted path in Rust; never accept an arbitrary frontend path.
 - [ ] `watch_font_folders` — `notify-debouncer-full` + incremental reconciliation.
@@ -114,6 +116,17 @@ Related: [[FontNest]] · [[Font Explorer Doc]]
 - [ ] Typed errors with `thiserror` → stable error codes + friendly UI messages.
 - [ ] Structured diagnostics with `tracing`; never expose internal paths/errors unnecessarily.
 - [ ] Treat all UI input as untrusted: validate IDs, canonical paths, and operation preconditions.
+
+### Online font providers
+
+- [x] Bundle a deterministic, commit-pinned Google Fonts manifest; the runtime never needs an API key.
+- [x] Add build-time catalogue refresh from the Google Fonts Developer API and official `google/fonts` repository.
+- [x] Restrict runtime downloads to trusted HTTPS hosts, reject redirects, cap sizes, and verify Git blob hashes.
+- [x] Parse every downloaded font before preview or install and address it through opaque provider IDs.
+- [x] Preserve the upstream licence beside FontNest's managed-installation records.
+- [x] Add explicit install review/confirmation and refresh the local catalogue after installation.
+- [x] Generate the complete release catalogue with a restricted Google Fonts API key.
+- [ ] Evaluate Fontshare as a separate provider after confirming a stable catalogue/download API and licence metadata.
 
 ---
 
@@ -138,6 +151,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]]
     - [x] Phase 1: read-only potential-conflict families and file comparison table.
 - [ ] **Install / uninstall** — drag-and-drop + file picker; uninstall guarded to app-managed.
     - [x] Safe preview-only picker for `.otf`, `.ttf`, `.woff`, and `.woff2`; files are never installed.
+    - [x] Discover, preview, select styles, and confirm per-user installs from Google Fonts.
 - [ ] Live updates from folder-watch events.
 - [x] Loading skeleton and native scan status.
 - [ ] Streamed batch progress indicator for long scans.
@@ -166,6 +180,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]]
 - [ ] Rust unit tests for domain invariants, parsing, validation, fingerprinting, and dedupe.
     - [x] Phase 1: catalogue ID/style/source/format tests plus Tauri greeting command tests.
 - [ ] Repository/migration tests against temporary SQLite databases.
+    - [x] Phase 1: managed-installation ledger transaction test against a temporary SQLite database.
 - [ ] Tests for install/uninstall on a sandboxed dir.
 - [ ] Frontend component tests (Vitest).
     - [x] Typed frontend command-adapter tests (Vitest).

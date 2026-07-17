@@ -415,16 +415,17 @@
 	.titlebar-search button,
 	.titlebar-search kbd {
 		position: absolute;
-		right: 5px;
 	}
 
 	.titlebar-search button {
+		right: 5px;
 		width: 30px;
 		height: 30px;
 		border-radius: 50%;
 	}
 
 	.titlebar-search kbd {
+		right: var(--space-md);
 		display: grid;
 		width: 24px;
 		height: 22px;

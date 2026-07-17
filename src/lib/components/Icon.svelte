@@ -1,6 +1,7 @@
 <script lang="ts" module>
 	export type IconName =
 		| 'alert'
+		| 'bookmark'
 		| 'check'
 		| 'chevron'
 		| 'close'
@@ -39,6 +40,8 @@
 	{#if name === 'library'}
 		<path d="M5 5.75h14v12.5H5z" />
 		<path d="M8.5 9.25h7M8.5 12h4.5M8.5 14.75h6" />
+	{:else if name === 'bookmark'}
+		<path d="M6.5 4.5h11v15L12 16.25 6.5 19.5z" />
 	{:else if name === 'duplicates'}
 		<rect x="4.5" y="7.5" width="12" height="12" rx="2" />
 		<path
