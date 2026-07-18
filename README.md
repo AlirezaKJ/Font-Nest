@@ -62,6 +62,11 @@ pnpm build
 
 Running the Rust tests regenerates committed DTO bindings under `src/lib/bindings`. Generated files should not be edited by hand.
 
+## Releases and updates
+
+Windows releases and the signed Tauri update feed are published through GitHub Actions. See
+[`docs/RELEASING.md`](docs/RELEASING.md) for the one-time secret setup and release checklist.
+
 ## Project structure
 
 ```text

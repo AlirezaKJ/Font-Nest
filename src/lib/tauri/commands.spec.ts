@@ -2,19 +2,24 @@ import { invoke } from '@tauri-apps/api/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+	checkForAppUpdate,
 	exportFontFaceParserJson,
 	getGoogleFontDetails,
 	greet,
 	inspectFontFace,
 	inspectFontGlyphOutline,
 	installGoogleFont,
+	installAppUpdate,
 	listGoogleFonts,
 	prepareGoogleFontPreview,
 	scanInstalledFonts
 } from './commands';
 
 vi.mock('@tauri-apps/api/core', () => ({
-	invoke: vi.fn()
+	invoke: vi.fn(),
+	Channel: class<T> {
+		onmessage: (message: T) => void = () => undefined;
+	}
 }));
 
 describe('greet', () => {
@@ -154,5 +159,46 @@ describe('Google Fonts commands', () => {
 				artifactIds: ['gf:inter:regular']
 			}
 		});
+	});
+});
+
+describe('application updater commands', () => {
+	beforeEach(() => {
+		vi.mocked(invoke).mockReset();
+	});
+
+	it('checks for updates through the Rust-owned updater command', async () => {
+		const response = {
+			currentVersion: '0.1.0',
+			version: '0.1.1',
+			notes: 'A safer updater.',
+			publishedAt: '2026-07-18 00:00:00 +00:00:00'
+		};
+		vi.mocked(invoke).mockResolvedValue(response);
+
+		await expect(checkForAppUpdate()).resolves.toEqual(response);
+		expect(invoke).toHaveBeenCalledWith('check_for_app_update');
+	});
+
+	it('passes only the expected version and a progress channel when installing', async () => {
+		const events: unknown[] = [];
+		vi.mocked(invoke).mockImplementation(async (_command, args) => {
+			const channel = (args as { onEvent: { onmessage: (message: unknown) => void } })
+				.onEvent;
+			channel.onmessage({
+				event: 'downloadProgress',
+				data: { downloaded: 512, total: 1024 }
+			});
+		});
+
+		await installAppUpdate('0.1.1', (event) => events.push(event));
+
+		expect(invoke).toHaveBeenCalledWith('install_app_update', {
+			expectedVersion: '0.1.1',
+			onEvent: expect.anything()
+		});
+		expect(events).toEqual([
+			{ event: 'downloadProgress', data: { downloaded: 512, total: 1024 } }
+		]);
 	});
 });

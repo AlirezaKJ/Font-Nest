@@ -41,7 +41,9 @@ pub fn run() {
             commands::list_google_fonts,
             commands::get_google_font_details,
             commands::prepare_google_font_preview,
-            commands::install_google_font
+            commands::install_google_font,
+            commands::check_for_app_update,
+            commands::install_app_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -20,6 +20,11 @@ Thumbs.db
 !.env.example
 !.env.test
 
+# Updater signing keys must stay outside the repository
+/fontnest.key
+/fontnest.key.pub
+/.tauri/
+
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*

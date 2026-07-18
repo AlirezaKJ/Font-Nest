@@ -4,6 +4,13 @@
 </script>
 
 <script lang="ts">
+	import {
+		appUpdater,
+		checkForUpdates,
+		installAvailableUpdate,
+		progressPercent
+	} from '$lib/app-updater';
+
 	import Icon from './Icon.svelte';
 
 	let {
@@ -21,6 +28,34 @@
 		onDensity: (value: DensityPreference) => void;
 		onPreviewText: (value: string) => void;
 	} = $props();
+
+	let updatePercent = $derived(progressPercent($appUpdater.downloaded, $appUpdater.total));
+	let updateBusy = $derived(
+		$appUpdater.status === 'checking' ||
+			$appUpdater.status === 'downloading' ||
+			$appUpdater.status === 'installing'
+	);
+
+	function updateStatusText(): string {
+		if ($appUpdater.status === 'checking') return 'Checking GitHub Releases…';
+		if ($appUpdater.status === 'current') return 'FontNest is up to date.';
+		if ($appUpdater.status === 'available' && $appUpdater.update) {
+			return `FontNest ${$appUpdater.update.version} is available.`;
+		}
+		if ($appUpdater.status === 'downloading') {
+			return updatePercent === null
+				? 'Downloading the verified update…'
+				: `Downloading the verified update… ${updatePercent}%`;
+		}
+		if ($appUpdater.status === 'installing') {
+			return 'Installing the update. FontNest will close shortly.';
+		}
+		if ($appUpdater.status === 'unsupported') {
+			return 'Update checks are available in the desktop app.';
+		}
+		if ($appUpdater.status === 'error') return $appUpdater.error;
+		return 'Updates are checked automatically after FontNest starts.';
+	}
 </script>
 
 <section class="settings-view" aria-labelledby="settings-title">
@@ -118,6 +153,71 @@
 				<span
 					>Installs are per-user and recorded by FontNest. System fonts remain protected.</span
 				>
+			</div>
+		</section>
+
+		<section class="setting-row" aria-labelledby="updates-title">
+			<div>
+				<h2 id="updates-title">Application updates</h2>
+				<p>
+					Updates come from the official FontNest GitHub release feed and are verified
+					before installation.
+				</p>
+			</div>
+			<div class="update-control" aria-live="polite">
+				<div
+					class="update-status"
+					class:error={$appUpdater.status === 'error'}
+					class:available={$appUpdater.status === 'available'}
+				>
+					<Icon
+						name={$appUpdater.status === 'error'
+							? 'alert'
+							: $appUpdater.status === 'available'
+								? 'upload'
+								: 'check'}
+						size={17}
+					/>
+					<div>
+						<strong>{updateStatusText()}</strong>
+						{#if $appUpdater.update?.notes && $appUpdater.status === 'available'}
+							<p class="release-notes">{$appUpdater.update.notes}</p>
+						{/if}
+					</div>
+				</div>
+
+				{#if $appUpdater.status === 'downloading'}
+					<progress
+						aria-label="Update download progress"
+						value={updatePercent ?? undefined}
+						max="100"
+					></progress>
+				{/if}
+
+				<div class="update-actions">
+					<button
+						type="button"
+						class="secondary-action"
+						disabled={updateBusy}
+						onclick={() => void checkForUpdates()}
+					>
+						{$appUpdater.status === 'checking' ? 'Checking…' : 'Check for updates'}
+					</button>
+					{#if $appUpdater.update && ['available', 'error'].includes($appUpdater.status)}
+						<button
+							type="button"
+							class="primary-action"
+							onclick={() => void installAvailableUpdate()}
+						>
+							Download and install {$appUpdater.update.version}
+						</button>
+					{/if}
+				</div>
+				{#if $appUpdater.update && ['available', 'error'].includes($appUpdater.status)}
+					<p class="restart-note">
+						FontNest will close while Windows installs the update.
+					</p>
+				{/if}
 			</div>
 		</section>
 
@@ -272,6 +372,96 @@
 
 	.safety-note span {
 		color: var(--color-text);
+	}
+
+	.update-control {
+		display: grid;
+		align-self: start;
+		gap: 12px;
+	}
+
+	.update-status {
+		display: flex;
+		align-items: flex-start;
+		gap: 9px;
+		min-height: 44px;
+		padding: 12px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		color: var(--color-success);
+		background: var(--color-panel);
+	}
+
+	.update-status.available {
+		color: var(--color-warning);
+	}
+
+	.update-status.error {
+		color: var(--color-danger);
+	}
+
+	.update-status strong {
+		display: block;
+		color: var(--color-text);
+		font-size: var(--text-body-sm);
+		line-height: 1.45;
+	}
+
+	.update-status .release-notes {
+		margin-top: 5px;
+		white-space: pre-line;
+	}
+
+	progress {
+		width: 100%;
+		height: 7px;
+		accent-color: var(--color-accent);
+	}
+
+	.update-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.update-actions button {
+		min-height: 36px;
+		padding: 0 12px;
+		border-radius: var(--radius-md);
+		font-size: var(--text-label);
+		font-weight: 600;
+		cursor: pointer;
+	}
+
+	.update-actions button:disabled {
+		cursor: wait;
+		opacity: 0.58;
+	}
+
+	.secondary-action {
+		border: 1px solid var(--color-border);
+		color: var(--color-text);
+		background: var(--color-control);
+	}
+
+	.secondary-action:hover:not(:disabled) {
+		background: var(--color-selected);
+	}
+
+	.primary-action {
+		border: 1px solid transparent;
+		color: var(--color-accent-ink);
+		background: var(--color-accent);
+	}
+
+	.primary-action:hover {
+		filter: brightness(1.04);
+	}
+
+	.restart-note {
+		margin: -3px 0 0;
+		color: var(--color-subtle);
+		font-size: var(--text-micro);
 	}
 
 	.shortcuts {

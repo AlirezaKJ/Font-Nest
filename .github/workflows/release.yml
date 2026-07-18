@@ -1,0 +1,70 @@
+name: Release FontNest
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    name: Build Windows release
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          $tauriVersion = (Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $packageVersion = (Get-Content -Raw package.json | ConvertFrom-Json).version
+          $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "([^"]+)"$' | Select-Object -First 1).Matches.Groups[1].Value
+
+          if ($packageVersion -ne $tauriVersion -or $cargoVersion -ne $tauriVersion) {
+            throw "Release versions must match: package=$packageVersion cargo=$cargoVersion tauri=$tauriVersion"
+          }
+
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$tauriVersion") {
+            throw "Tag $env:GITHUB_REF_NAME does not match application version v$tauriVersion"
+          }
+
+      - name: Build and upload unsigned Windows release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: FontNest v__VERSION__
+          generateReleaseNotes: true
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          updaterJsonPreferNsis: true
+          args: --bundles nsis

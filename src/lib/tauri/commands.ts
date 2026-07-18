@@ -1,5 +1,7 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 
+import type { AppUpdateEvent } from '$lib/bindings/AppUpdateEvent';
+import type { AppUpdateInfo } from '$lib/bindings/AppUpdateInfo';
 import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
 import type { FontFaceInspection } from '$lib/bindings/FontFaceInspection';
 import type { FontGlyphOutline } from '$lib/bindings/FontGlyphOutline';
@@ -53,4 +55,17 @@ export function installGoogleFont(
 	return invoke<GoogleFontInstallResult>('install_google_font', {
 		request: { familyId, artifactIds }
 	});
+}
+
+export function checkForAppUpdate(): Promise<AppUpdateInfo | null> {
+	return invoke<AppUpdateInfo | null>('check_for_app_update');
+}
+
+export function installAppUpdate(
+	expectedVersion: string,
+	onEvent: (event: AppUpdateEvent) => void
+): Promise<void> {
+	const channel = new Channel<AppUpdateEvent>();
+	channel.onmessage = onEvent;
+	return invoke<void>('install_app_update', { expectedVersion, onEvent: channel });
 }

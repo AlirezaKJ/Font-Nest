@@ -1,12 +1,14 @@
 use std::sync::Mutex;
 
-use tauri::Manager;
+use tauri::{Manager, ipc::Channel};
+use tauri_plugin_updater::UpdaterExt;
 
 use crate::catalogue::{self, CatalogueInspectionError, FontCatalogueStore};
 use crate::dto::{
-    CommandError, FontCatalogue, FontFaceInspection, FontGlyphOutline, FontGlyphOutlineRequest,
-    FontParserJsonExport, GoogleFontFamilyDetails, GoogleFontInstallResult, GoogleFontPage,
-    GoogleFontPageRequest, GoogleFontPreview, Greeting, InstallGoogleFontRequest,
+    AppUpdateEvent, AppUpdateInfo, CommandError, FontCatalogue, FontFaceInspection,
+    FontGlyphOutline, FontGlyphOutlineRequest, FontParserJsonExport, GoogleFontFamilyDetails,
+    GoogleFontInstallResult, GoogleFontPage, GoogleFontPageRequest, GoogleFontPreview, Greeting,
+    InstallGoogleFontRequest,
 };
 use crate::font_inspection::FontInspectionError;
 use crate::google_fonts::{self, GoogleFontsError};
@@ -213,6 +215,95 @@ pub async fn install_google_font(
         .map_err(map_google_fonts_error)
 }
 
+#[tauri::command]
+pub async fn check_for_app_update(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Option<AppUpdateInfo>, CommandError> {
+    ensure_trusted_window(&window)?;
+    let updater = app.updater().map_err(|error| {
+        log::error!("Application updater could not be initialized: {error}");
+        CommandError::update_check_failed()
+    })?;
+    let update = updater.check().await.map_err(|error| {
+        log::error!("Application update check failed: {error}");
+        CommandError::update_check_failed()
+    })?;
+
+    Ok(update.map(|update| AppUpdateInfo {
+        current_version: update.current_version,
+        version: update.version,
+        notes: update.body.unwrap_or_default(),
+        published_at: update.date.map(|date| date.to_string()),
+    }))
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn install_app_update(
+    expected_version: String,
+    on_event: Channel<AppUpdateEvent>,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), CommandError> {
+    ensure_trusted_window(&window)?;
+    let updater = app.updater().map_err(|error| {
+        log::error!("Application updater could not be initialized: {error}");
+        CommandError::update_install_failed()
+    })?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|error| {
+            log::error!("Application update re-check failed: {error}");
+            CommandError::update_install_failed()
+        })?
+        .ok_or_else(CommandError::update_unavailable)?;
+
+    if !update_version_matches(&expected_version, &update.version) {
+        return Err(CommandError::update_changed());
+    }
+
+    let progress_events = on_event.clone();
+    let installing_events = on_event;
+    let mut downloaded = 0_u64;
+    let mut started = false;
+
+    update
+        .download_and_install(
+            move |chunk_length, content_length| {
+                if !started {
+                    started = true;
+                    let _ = progress_events.send(AppUpdateEvent::DownloadStarted {
+                        total: content_length.map(saturating_u32),
+                    });
+                }
+                downloaded =
+                    downloaded.saturating_add(u64::try_from(chunk_length).unwrap_or(u64::MAX));
+                let _ = progress_events.send(AppUpdateEvent::DownloadProgress {
+                    downloaded: saturating_u32(downloaded),
+                    total: content_length.map(saturating_u32),
+                });
+            },
+            move || {
+                let _ = installing_events.send(AppUpdateEvent::Installing);
+            },
+        )
+        .await
+        .map_err(|error| {
+            log::error!("Application update installation failed: {error}");
+            CommandError::update_install_failed()
+        })
+}
+
+fn update_version_matches(expected: &str, announced: &str) -> bool {
+    !expected.trim().is_empty() && expected == announced
+}
+
+fn saturating_u32(value: u64) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
 fn ensure_trusted_window(window: &tauri::WebviewWindow) -> Result<(), CommandError> {
     let url = window.url().map_err(|_| CommandError::untrusted_origin())?;
     if is_trusted_app_origin(&url) {
@@ -295,7 +386,10 @@ fn map_google_fonts_error(error: GoogleFontsError) -> CommandError {
 mod tests {
     use crate::dto::{FontGlyphOutlineRequest, FontGlyphVariationValue};
 
-    use super::{greet, is_trusted_app_origin, validate_face_id, validate_glyph_outline_request};
+    use super::{
+        greet, is_trusted_app_origin, update_version_matches, validate_face_id,
+        validate_glyph_outline_request,
+    };
 
     #[test]
     fn greeting_uses_a_trimmed_name() {
@@ -309,6 +403,13 @@ mod tests {
         let error = greet("   ".to_owned()).expect_err("an empty name must be rejected");
 
         assert_eq!(error.code, "invalid_name");
+    }
+
+    #[test]
+    fn updater_installation_requires_the_version_that_was_presented() {
+        assert!(update_version_matches("0.1.1", "0.1.1"));
+        assert!(!update_version_matches("0.1.1", "0.1.2"));
+        assert!(!update_version_matches("", "0.1.1"));
     }
 
     #[test]

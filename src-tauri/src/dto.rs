@@ -10,6 +10,25 @@ pub struct Greeting {
     pub version: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct AppUpdateInfo {
+    pub current_version: String,
+    pub version: String,
+    pub notes: String,
+    pub published_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(tag = "event", content = "data", rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub enum AppUpdateEvent {
+    DownloadStarted { total: Option<u32> },
+    DownloadProgress { downloaded: u32, total: Option<u32> },
+    Installing,
+}
+
 impl Greeting {
     pub fn new(name: &str) -> Self {
         Self {
@@ -329,6 +348,34 @@ impl CommandError {
         Self {
             code: "catalogue_unavailable",
             message: "FontNest could not read the installed font catalogue. Try scanning again.",
+        }
+    }
+
+    pub const fn update_check_failed() -> Self {
+        Self {
+            code: "update_check_failed",
+            message: "FontNest could not check for updates. Check your connection and try again.",
+        }
+    }
+
+    pub const fn update_unavailable() -> Self {
+        Self {
+            code: "update_unavailable",
+            message: "That FontNest update is no longer available. Check again.",
+        }
+    }
+
+    pub const fn update_changed() -> Self {
+        Self {
+            code: "update_changed",
+            message: "A newer FontNest update became available. Check again before installing.",
+        }
+    }
+
+    pub const fn update_install_failed() -> Self {
+        Self {
+            code: "update_install_failed",
+            message: "FontNest could not install the update. Check your connection and try again.",
         }
     }
 

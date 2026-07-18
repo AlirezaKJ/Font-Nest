@@ -3,6 +3,7 @@
 
 	import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
 	import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
+	import { checkForUpdates } from '$lib/app-updater';
 	import { getConflictDestination } from '$lib/conflict-navigation';
 	import AppNavigation, { type AppView } from '$lib/components/AppNavigation.svelte';
 	import AppTitleBar from '$lib/components/AppTitleBar.svelte';
@@ -27,6 +28,7 @@
 	const DEFAULT_PREVIEW = 'Hamburgefontsiv 0123 — Pack my box with five dozen liquor jugs.';
 	const DEFAULT_SPECIMEN_SIZE = 96;
 	const MAX_DETAIL_FACES = 12;
+	const UPDATE_CHECK_DELAY_MS = 8_000;
 	const PREFERENCES_KEY = 'fontnest.preferences.v1';
 	const GLYPH_SAMPLE = [
 		'A',
@@ -100,6 +102,7 @@
 	let toast = $state<Toast | null>(null);
 	let previewFileInput = $state<HTMLInputElement>();
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
+	let updateCheckTimer: ReturnType<typeof setTimeout> | undefined;
 
 	let sourceOptions = $derived.by<DiscoverFilterOption[]>(() => {
 		const values = [
@@ -223,11 +226,24 @@
 		colorScheme.addEventListener('change', handleColorScheme);
 		window.addEventListener('keydown', handleKeydown);
 		void refreshCatalogue();
+		if ('__TAURI_INTERNALS__' in window) {
+			updateCheckTimer = setTimeout(() => {
+				void checkForUpdates().then((update) => {
+					if (update) {
+						showToast(
+							`FontNest ${update.version} is available. Open Settings to install it.`,
+							'success'
+						);
+					}
+				});
+			}, UPDATE_CHECK_DELAY_MS);
+		}
 
 		return () => {
 			colorScheme.removeEventListener('change', handleColorScheme);
 			window.removeEventListener('keydown', handleKeydown);
 			if (toastTimer) clearTimeout(toastTimer);
+			if (updateCheckTimer) clearTimeout(updateCheckTimer);
 		};
 	});
 
