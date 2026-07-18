@@ -81,4 +81,6 @@ src-tauri/capabilities/  Tauri permission declarations
 
 ## License
 
-Not chosen yet. This remains an explicit project decision before distribution.
+FontNest's original source code is licensed under the [Apache License 2.0](LICENSE).
+
+Third-party dependencies and font files downloaded or installed through FontNest remain subject to their respective licenses. The Apache License 2.0 does not grant permission to use the FontNest name or branding except as required to describe the origin of the software.

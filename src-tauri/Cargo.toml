@@ -3,6 +3,7 @@ name = "fontnest"
 version = "0.1.0"
 description = "A lightweight desktop font manager"
 authors = ["FontNest contributors"]
+license = "Apache-2.0"
 edition = "2024"
 rust-version = "1.85"
 
@@ -38,6 +39,9 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.56.0"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
 
 [dev-dependencies]
 tempfile = "3.23.0"
