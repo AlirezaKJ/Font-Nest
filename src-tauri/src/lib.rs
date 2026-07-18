@@ -1,6 +1,7 @@
 mod catalogue;
 mod commands;
 mod dto;
+mod font_inspection;
 mod font_platform;
 mod google_fonts;
 mod managed_installations;
@@ -13,6 +14,7 @@ mod managed_installations;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(commands::CatalogueState::default())
         .setup(|app| {
             use tauri::Manager;
 
@@ -32,6 +34,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::greet,
             commands::scan_installed_fonts,
+            commands::inspect_font_face,
+            commands::inspect_font_glyph_outline,
+            commands::export_font_face_parser_json,
             commands::list_google_fonts,
             commands::get_google_font_details,
             commands::prepare_google_font_preview,

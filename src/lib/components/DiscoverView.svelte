@@ -6,6 +6,8 @@
 	import type { GoogleFontFamilySummary } from '$lib/bindings/GoogleFontFamilySummary';
 	import type { GoogleFontPage } from '$lib/bindings/GoogleFontPage';
 	import { KeyedTaskQueue, pickPreviewEvictionCandidate } from '$lib/discover/preview-queue';
+	import { activateInstalledGoogleFont } from '$lib/fonts/session-fonts';
+	import { isStickySurfaceElevated } from '$lib/sticky-surface';
 	import {
 		getGoogleFontDetails,
 		installGoogleFont,
@@ -173,7 +175,9 @@
 	let detailsError = $state('');
 	let previewFamilies = $state<Record<string, string>>({});
 	let previewStatuses = $state<Record<string, PreviewStatus>>({});
-	let specimenFeed = $state<HTMLDivElement>();
+	let discoverScroll = $state<HTMLElement>();
+	let discoverControls = $state<HTMLElement>();
+	let discoverControlsElevated = $state(false);
 	let installDialog = $state<HTMLDialogElement>();
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
 	let catalogueRequest = 0;
@@ -435,7 +439,7 @@
 					}
 				}
 			},
-			{ root: specimenFeed ?? null, rootMargin: '420px 0px', threshold: 0.01 }
+			{ root: discoverScroll ?? null, rootMargin: '420px 0px', threshold: 0.01 }
 		);
 		observer.observe(node);
 
@@ -512,6 +516,15 @@
 			: customSpecimenText.trim() || family.family;
 	}
 
+	function handleDiscoverScroll(event: Event) {
+		const scrollContainer = event.currentTarget as HTMLElement;
+		const elevated = isStickySurfaceElevated(
+			scrollContainer.scrollTop,
+			discoverControls?.offsetTop ?? Number.POSITIVE_INFINITY
+		);
+		if (elevated !== discoverControlsElevated) discoverControlsElevated = elevated;
+	}
+
 	function toggleArtifact(artifactId: string) {
 		selectedArtifactIds = selectedArtifactIds.includes(artifactId)
 			? selectedArtifactIds.filter((id) => id !== artifactId)
@@ -522,6 +535,9 @@
 		if (!details || !selectedArtifactIds.length || !nativeMode) return;
 		installing = true;
 		try {
+			const artifactsToActivate = details.artifacts.filter((artifact) =>
+				selectedArtifactIds.includes(artifact.id)
+			);
 			const result = await installGoogleFont(details.id, selectedArtifactIds);
 			const installedIds = new Set([
 				...result.installedArtifactIds,
@@ -542,13 +558,21 @@
 					)
 				};
 			}
+			let livePreviewReady = true;
+			try {
+				await activateInstalledGoogleFont(result.familyName, artifactsToActivate);
+			} catch {
+				livePreviewReady = false;
+			}
 			selectedArtifactIds = [];
 			confirmingInstall = false;
 			onToast(
-				result.installedArtifactIds.length
-					? `${result.familyName} was installed for your Windows account.`
-					: `${result.familyName} is already managed by FontNest.`,
-				'success'
+				!livePreviewReady
+					? `${result.familyName} was installed, but its live preview could not be activated in this session.`
+					: result.installedArtifactIds.length
+						? `${result.familyName} was installed for your Windows account.`
+						: `${result.familyName} is already managed by FontNest.`,
+				livePreviewReady ? 'success' : 'error'
 			);
 			await onInstalled();
 		} catch (error) {
@@ -608,7 +632,12 @@
 	}
 </script>
 
-<section class="discover-view" aria-labelledby="discover-title">
+<section
+	bind:this={discoverScroll}
+	class="discover-view"
+	aria-labelledby="discover-title"
+	onscroll={handleDiscoverScroll}
+>
 	<header class="discover-header">
 		<div>
 			<h1 id="discover-title">Discover open fonts</h1>
@@ -632,7 +661,12 @@
 		</div>
 	{/if}
 
-	<section class="discover-controls" aria-label="Discover controls">
+	<section
+		bind:this={discoverControls}
+		class:is-elevated={discoverControlsElevated}
+		class="discover-controls sticky-control-surface"
+		aria-label="Discover controls"
+	>
 		<div class="primary-toolbar">
 			<label class="search-control">
 				<span>Search</span>
@@ -745,11 +779,7 @@
 		</div>
 	</section>
 
-	<div
-		bind:this={specimenFeed}
-		class="specimen-feed"
-		style={`--specimen-size: ${specimenSize}px`}
-	>
+	<div class="specimen-feed" style={`--specimen-size: ${specimenSize}px`}>
 		<div class="catalogue-heading">
 			<strong>{page?.total.toLocaleString() ?? 0} families</strong>
 			<span>Names render in their own typeface as they enter the window</span>
@@ -1010,7 +1040,8 @@
 		height: 100%;
 		min-height: 0;
 		flex-direction: column;
-		overflow: hidden;
+		overflow-x: hidden;
+		overflow-y: auto;
 		background: var(--color-surface);
 	}
 
@@ -1108,12 +1139,12 @@
 	}
 
 	.discover-controls {
-		position: relative;
-		z-index: 2;
+		position: sticky;
+		top: 0;
+		z-index: var(--z-sticky);
 		width: 100%;
 		min-width: 0;
 		flex: none;
-		background: var(--color-panel);
 	}
 
 	.primary-toolbar {
@@ -1308,9 +1339,8 @@
 		width: 100%;
 		min-width: 0;
 		min-height: 0;
-		flex: 1;
-		overflow-x: hidden;
-		overflow-y: auto;
+		flex: none;
+		overflow: visible;
 		background: var(--color-surface);
 	}
 

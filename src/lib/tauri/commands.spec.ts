@@ -2,8 +2,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+	exportFontFaceParserJson,
 	getGoogleFontDetails,
 	greet,
+	inspectFontFace,
+	inspectFontGlyphOutline,
 	installGoogleFont,
 	listGoogleFonts,
 	prepareGoogleFontPreview,
@@ -49,6 +52,37 @@ describe('scanInstalledFonts', () => {
 
 		await expect(scanInstalledFonts()).resolves.toEqual(response);
 		expect(invoke).toHaveBeenCalledWith('scan_installed_fonts');
+	});
+});
+
+describe('font face parser commands', () => {
+	beforeEach(() => {
+		vi.mocked(invoke).mockReset();
+	});
+
+	it('inspects faces, glyph outlines, and exports through opaque IDs', async () => {
+		const faceId = 'face:0123456789abcdef0123456789abcdef01234567';
+		vi.mocked(invoke).mockResolvedValueOnce({ faceId, metrics: { unitsPerEm: 1000 } });
+		vi.mocked(invoke).mockResolvedValueOnce({ faceId, codepoint: 65, pathData: 'M0 0' });
+		vi.mocked(invoke).mockResolvedValueOnce({ faceId, rawJson: '{}' });
+
+		await inspectFontFace(faceId);
+		await inspectFontGlyphOutline({
+			faceId,
+			codepoint: 65,
+			variations: [{ tag: 'wght', value: 650 }]
+		});
+		await exportFontFaceParserJson(faceId);
+
+		expect(invoke).toHaveBeenNthCalledWith(1, 'inspect_font_face', { faceId });
+		expect(invoke).toHaveBeenNthCalledWith(2, 'inspect_font_glyph_outline', {
+			request: {
+				faceId,
+				codepoint: 65,
+				variations: [{ tag: 'wght', value: 650 }]
+			}
+		});
+		expect(invoke).toHaveBeenNthCalledWith(3, 'export_font_face_parser_json', { faceId });
 	});
 });
 

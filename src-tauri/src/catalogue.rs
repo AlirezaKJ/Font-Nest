@@ -2,9 +2,81 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Instant;
 
-use fontdb::{Database, FaceInfo, Source, Style};
+use fontdb::{Database, FaceInfo, ID, Source, Style};
+use sha1::{Digest, Sha1};
 
-use crate::dto::{FontCatalogue, FontFaceSummary, FontFamilySummary};
+use crate::dto::{
+    FontCatalogue, FontFaceInspection, FontFaceSummary, FontFamilySummary, FontGlyphOutline,
+    FontGlyphVariationValue, FontParserJsonExport,
+};
+use crate::font_inspection::{self, FontInspectionError};
+
+pub struct ScannedFontCatalogue {
+    pub catalogue: FontCatalogue,
+    pub store: FontCatalogueStore,
+}
+
+pub struct FontCatalogueStore {
+    database: Database,
+    faces: BTreeMap<String, ID>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CatalogueInspectionError {
+    #[error("the requested face ID is not in the current catalogue")]
+    UnknownFace,
+    #[error("the font data could not be loaded")]
+    DataUnavailable,
+    #[error(transparent)]
+    Parser(#[from] FontInspectionError),
+}
+
+impl FontCatalogueStore {
+    pub fn inspect_face(
+        &self,
+        face_id: &str,
+    ) -> Result<FontFaceInspection, CatalogueInspectionError> {
+        self.with_face_data(face_id, |data, index| {
+            font_inspection::inspect_face(face_id, data, index)
+        })
+    }
+
+    pub fn export_face_json(
+        &self,
+        face_id: &str,
+    ) -> Result<FontParserJsonExport, CatalogueInspectionError> {
+        self.with_face_data(face_id, |data, index| {
+            font_inspection::export_face_json(face_id, data, index)
+        })
+    }
+
+    pub fn inspect_glyph_outline(
+        &self,
+        face_id: &str,
+        codepoint: u32,
+        variations: &[FontGlyphVariationValue],
+    ) -> Result<FontGlyphOutline, CatalogueInspectionError> {
+        self.with_face_data(face_id, |data, index| {
+            font_inspection::inspect_glyph_outline(face_id, data, index, codepoint, variations)
+        })
+    }
+
+    fn with_face_data<T>(
+        &self,
+        face_id: &str,
+        parse: impl FnOnce(&[u8], u32) -> Result<T, FontInspectionError>,
+    ) -> Result<T, CatalogueInspectionError> {
+        let database_id = self
+            .faces
+            .get(face_id)
+            .copied()
+            .ok_or(CatalogueInspectionError::UnknownFace)?;
+        self.database
+            .with_face_data(database_id, parse)
+            .ok_or(CatalogueInspectionError::DataUnavailable)?
+            .map_err(CatalogueInspectionError::from)
+    }
+}
 
 #[derive(Debug)]
 struct FontFamily {
@@ -36,11 +108,12 @@ impl FontFamily {
         }
     }
 
-    fn add_face(&mut self, face: &FaceInfo) {
+    fn add_face(&mut self, face: &FaceInfo) -> String {
         let (source, file_name, file_key, format) = face_file_details(face);
         let style = style_value(face.style);
         let style_name = style_name(face.weight.0, face.style);
         let signature = format!("{}:{style}", face.weight.0);
+        let face_id = opaque_face_id(&file_key, face.index, &face.post_script_name);
 
         self.files.insert(file_key.clone());
         self.styles.insert(style_name.clone());
@@ -54,7 +127,7 @@ impl FontFamily {
         self.monospaced &= face.monospaced;
 
         self.faces.push(FontFaceSummary {
-            id: format!("{}:{}:{}", self.id, face.index, face.post_script_name),
+            id: face_id.clone(),
             post_script_name: face.post_script_name.clone(),
             style_name,
             style: style.to_owned(),
@@ -65,6 +138,7 @@ impl FontFamily {
             face_index: face.index,
             monospaced: face.monospaced,
         });
+        face_id
     }
 
     fn finish(mut self) -> FontFamilySummary {
@@ -96,13 +170,14 @@ impl FontFamily {
     }
 }
 
-pub fn scan_installed_fonts() -> FontCatalogue {
+pub fn scan_installed_fonts() -> ScannedFontCatalogue {
     let started = Instant::now();
     let mut database = Database::new();
     database.load_system_fonts();
 
     let face_count = count(database.len());
     let mut families = BTreeMap::<String, FontFamily>::new();
+    let mut face_ids = BTreeMap::new();
 
     for face in database.faces() {
         let Some((name, _language)) = face.families.first() else {
@@ -113,22 +188,44 @@ pub fn scan_installed_fonts() -> FontCatalogue {
             continue;
         }
 
-        families
+        let face_id = families
             .entry(name.to_lowercase())
             .or_insert_with(|| FontFamily::new(name.to_owned()))
             .add_face(face);
+        face_ids.insert(face_id, face.id);
     }
 
     let families: Vec<_> = families.into_values().map(FontFamily::finish).collect();
     let conflict_count = count(families.iter().filter(|family| family.has_conflict).count());
 
-    FontCatalogue {
-        family_count: count(families.len()),
-        face_count,
-        conflict_count,
-        families,
-        scan_duration_ms: u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX),
+    ScannedFontCatalogue {
+        catalogue: FontCatalogue {
+            family_count: count(families.len()),
+            face_count,
+            conflict_count,
+            families,
+            scan_duration_ms: u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX),
+        },
+        store: FontCatalogueStore {
+            database,
+            faces: face_ids,
+        },
     }
+}
+
+fn opaque_face_id(file_key: &str, face_index: u32, post_script_name: &str) -> String {
+    use std::fmt::Write;
+
+    let mut digest = Sha1::new();
+    digest.update(file_key.as_bytes());
+    digest.update(face_index.to_be_bytes());
+    digest.update(post_script_name.as_bytes());
+    let mut face_id = String::with_capacity("face:".len() + 40);
+    face_id.push_str("face:");
+    for byte in digest.finalize() {
+        let _ = write!(face_id, "{byte:02x}");
+    }
+    face_id
 }
 
 fn face_file_details(face: &FaceInfo) -> (String, String, String, String) {
@@ -235,7 +332,7 @@ mod tests {
 
     use fontdb::Style;
 
-    use super::{family_id, format_label, source_label, style_name};
+    use super::{family_id, format_label, opaque_face_id, source_label, style_name};
 
     #[test]
     fn family_ids_are_normalized_for_selection() {
@@ -264,5 +361,17 @@ mod tests {
             format_label(Path::new("C:\\Windows\\Fonts\\arial.ttf")),
             "TrueType"
         );
+    }
+
+    #[test]
+    fn opaque_face_ids_are_stable_and_do_not_expose_source_paths() {
+        let path = "C:\\Windows\\Fonts\\arial.ttf";
+        let id = opaque_face_id(path, 0, "ArialMT");
+
+        assert_eq!(id, opaque_face_id(path, 0, "ArialMT"));
+        assert_ne!(id, opaque_face_id(path, 1, "ArialMT"));
+        assert!(id.starts_with("face:"));
+        assert!(!id.contains("Windows"));
+        assert!(!id.contains("Arial"));
     }
 }

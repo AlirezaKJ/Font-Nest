@@ -39,6 +39,158 @@ pub struct FontFaceSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontFaceMetrics {
+    pub units_per_em: u16,
+    pub ascender: i16,
+    pub capital_height: Option<i16>,
+    pub capital_height_source: &'static str,
+    pub x_height: Option<i16>,
+    pub x_height_source: &'static str,
+    pub baseline: i16,
+    pub descender: i16,
+    pub line_gap: i16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontFaceNames {
+    pub full_name: Option<String>,
+    pub version: Option<String>,
+    pub manufacturer: Option<String>,
+    pub designer: Option<String>,
+    pub description: Option<String>,
+    pub license: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontVariationAxis {
+    pub tag: String,
+    pub name_id: u16,
+    pub minimum: f32,
+    pub default: f32,
+    pub maximum: f32,
+    pub hidden: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontEmbeddingProperties {
+    pub permissions: Option<String>,
+    pub subsetting_allowed: bool,
+    pub outline_embedding_allowed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontFaceProperties {
+    pub glyph_count: u16,
+    pub unicode_codepoint_count: u32,
+    pub table_count: u16,
+    pub weight: u16,
+    pub width: u16,
+    pub italic_angle: f32,
+    pub traits: Vec<String>,
+    pub embedding: FontEmbeddingProperties,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontFaceInspection {
+    pub face_id: String,
+    pub parser_name: &'static str,
+    pub parser_version: &'static str,
+    pub metrics: FontFaceMetrics,
+    pub names: FontFaceNames,
+    pub properties: FontFaceProperties,
+    pub variation_axes: Vec<FontVariationAxis>,
+    pub unicode_codepoints: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontGlyphVariationValue {
+    pub tag: String,
+    pub value: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontGlyphOutlineRequest {
+    pub face_id: String,
+    pub codepoint: u32,
+    pub variations: Vec<FontGlyphVariationValue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontGlyphBounds {
+    pub x_min: i16,
+    pub y_min: i16,
+    pub x_max: i16,
+    pub y_max: i16,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontGlyphOutlinePoint {
+    pub x: f32,
+    pub y: f32,
+    pub kind: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontGlyphOutlineHandle {
+    pub x1: f32,
+    pub y1: f32,
+    pub x2: f32,
+    pub y2: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontGlyphOutline {
+    pub face_id: String,
+    pub codepoint: u32,
+    pub glyph_id: u16,
+    pub glyph_name: Option<String>,
+    pub units_per_em: u16,
+    pub advance_width: Option<u16>,
+    pub left_side_bearing: Option<i16>,
+    pub bounds: Option<FontGlyphBounds>,
+    pub path_data: String,
+    pub points: Vec<FontGlyphOutlinePoint>,
+    pub handles: Vec<FontGlyphOutlineHandle>,
+    pub contour_count: u16,
+    pub outline_available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontParserJsonExport {
+    pub face_id: String,
+    pub parser_name: &'static str,
+    pub parser_version: &'static str,
+    pub json_byte_length: u32,
+    pub raw_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct FontFamilySummary {
     pub id: String,
     pub name: String,
@@ -177,6 +329,34 @@ impl CommandError {
         Self {
             code: "catalogue_unavailable",
             message: "FontNest could not read the installed font catalogue. Try scanning again.",
+        }
+    }
+
+    pub const fn font_face_unavailable() -> Self {
+        Self {
+            code: "font_face_unavailable",
+            message: "That font face is no longer available. Scan your library again.",
+        }
+    }
+
+    pub const fn font_parser_unavailable() -> Self {
+        Self {
+            code: "font_parser_unavailable",
+            message: "FontNest could not parse the selected font face.",
+        }
+    }
+
+    pub const fn invalid_glyph_request() -> Self {
+        Self {
+            code: "invalid_glyph_request",
+            message: "That glyph outline request is not valid.",
+        }
+    }
+
+    pub const fn font_glyph_unavailable() -> Self {
+        Self {
+            code: "font_glyph_unavailable",
+            message: "The selected font does not expose that character as a glyph.",
         }
     }
 

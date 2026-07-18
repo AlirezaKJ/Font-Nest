@@ -1,6 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
+import type { FontFaceInspection } from '$lib/bindings/FontFaceInspection';
+import type { FontGlyphOutline } from '$lib/bindings/FontGlyphOutline';
+import type { FontGlyphOutlineRequest } from '$lib/bindings/FontGlyphOutlineRequest';
+import type { FontParserJsonExport } from '$lib/bindings/FontParserJsonExport';
 import type { Greeting } from '$lib/bindings/Greeting';
 import type { GoogleFontFamilyDetails } from '$lib/bindings/GoogleFontFamilyDetails';
 import type { GoogleFontInstallResult } from '$lib/bindings/GoogleFontInstallResult';
@@ -14,6 +18,20 @@ export function greet(name: string): Promise<Greeting> {
 
 export function scanInstalledFonts(): Promise<FontCatalogue> {
 	return invoke<FontCatalogue>('scan_installed_fonts');
+}
+
+export function inspectFontFace(faceId: string): Promise<FontFaceInspection> {
+	return invoke<FontFaceInspection>('inspect_font_face', { faceId });
+}
+
+export function inspectFontGlyphOutline(
+	request: FontGlyphOutlineRequest
+): Promise<FontGlyphOutline> {
+	return invoke<FontGlyphOutline>('inspect_font_glyph_outline', { request });
+}
+
+export function exportFontFaceParserJson(faceId: string): Promise<FontParserJsonExport> {
+	return invoke<FontParserJsonExport>('export_font_face_parser_json', { faceId });
 }
 
 export function listGoogleFonts(request: GoogleFontPageRequest): Promise<GoogleFontPage> {

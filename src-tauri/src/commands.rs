@@ -1,13 +1,78 @@
+use std::sync::Mutex;
+
 use tauri::Manager;
 
-use crate::catalogue;
+use crate::catalogue::{self, CatalogueInspectionError, FontCatalogueStore};
 use crate::dto::{
-    CommandError, FontCatalogue, GoogleFontFamilyDetails, GoogleFontInstallResult, GoogleFontPage,
+    CommandError, FontCatalogue, FontFaceInspection, FontGlyphOutline, FontGlyphOutlineRequest,
+    FontParserJsonExport, GoogleFontFamilyDetails, GoogleFontInstallResult, GoogleFontPage,
     GoogleFontPageRequest, GoogleFontPreview, Greeting, InstallGoogleFontRequest,
 };
+use crate::font_inspection::FontInspectionError;
 use crate::google_fonts::{self, GoogleFontsError};
 
 const MAX_NAME_LENGTH: usize = 64;
+const FACE_ID_PREFIX: &str = "face:";
+const SHA1_HEX_LENGTH: usize = 40;
+const MAX_GLYPH_VARIATIONS: usize = 64;
+
+#[derive(Default)]
+pub struct CatalogueState {
+    store: Mutex<Option<FontCatalogueStore>>,
+}
+
+impl CatalogueState {
+    fn replace(&self, store: FontCatalogueStore) -> Result<(), CommandError> {
+        let mut current = self
+            .store
+            .lock()
+            .map_err(|_| CommandError::catalogue_unavailable())?;
+        *current = Some(store);
+        Ok(())
+    }
+
+    fn inspect_face(&self, face_id: &str) -> Result<FontFaceInspection, CommandError> {
+        let current = self
+            .store
+            .lock()
+            .map_err(|_| CommandError::catalogue_unavailable())?;
+        let store = current
+            .as_ref()
+            .ok_or_else(CommandError::catalogue_unavailable)?;
+        store
+            .inspect_face(face_id)
+            .map_err(|error| map_catalogue_inspection_error(&error))
+    }
+
+    fn export_face_json(&self, face_id: &str) -> Result<FontParserJsonExport, CommandError> {
+        let current = self
+            .store
+            .lock()
+            .map_err(|_| CommandError::catalogue_unavailable())?;
+        let store = current
+            .as_ref()
+            .ok_or_else(CommandError::catalogue_unavailable)?;
+        store
+            .export_face_json(face_id)
+            .map_err(|error| map_catalogue_inspection_error(&error))
+    }
+
+    fn inspect_glyph_outline(
+        &self,
+        request: &FontGlyphOutlineRequest,
+    ) -> Result<FontGlyphOutline, CommandError> {
+        let current = self
+            .store
+            .lock()
+            .map_err(|_| CommandError::catalogue_unavailable())?;
+        let store = current
+            .as_ref()
+            .ok_or_else(CommandError::catalogue_unavailable)?;
+        store
+            .inspect_glyph_outline(&request.face_id, request.codepoint, &request.variations)
+            .map_err(|error| map_catalogue_inspection_error(&error))
+    }
+}
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
@@ -22,10 +87,60 @@ pub fn greet(name: String) -> Result<Greeting, CommandError> {
 }
 
 #[tauri::command]
-pub async fn scan_installed_fonts() -> Result<FontCatalogue, CommandError> {
-    tauri::async_runtime::spawn_blocking(catalogue::scan_installed_fonts)
+pub async fn scan_installed_fonts(app: tauri::AppHandle) -> Result<FontCatalogue, CommandError> {
+    let scanned = tauri::async_runtime::spawn_blocking(catalogue::scan_installed_fonts)
         .await
-        .map_err(|_| CommandError::catalogue_unavailable())
+        .map_err(|_| CommandError::catalogue_unavailable())?;
+    app.state::<CatalogueState>().replace(scanned.store)?;
+    Ok(scanned.catalogue)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn inspect_font_face(
+    face_id: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<FontFaceInspection, CommandError> {
+    ensure_trusted_window(&window)?;
+    validate_face_id(&face_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<CatalogueState>().inspect_face(&face_id)
+    })
+    .await
+    .map_err(|_| CommandError::font_parser_unavailable())?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn export_font_face_parser_json(
+    face_id: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<FontParserJsonExport, CommandError> {
+    ensure_trusted_window(&window)?;
+    validate_face_id(&face_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<CatalogueState>().export_face_json(&face_id)
+    })
+    .await
+    .map_err(|_| CommandError::font_parser_unavailable())?
+}
+
+#[tauri::command]
+pub async fn inspect_font_glyph_outline(
+    request: FontGlyphOutlineRequest,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<FontGlyphOutline, CommandError> {
+    ensure_trusted_window(&window)?;
+    validate_glyph_outline_request(&request)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<CatalogueState>()
+            .inspect_glyph_outline(&request)
+    })
+    .await
+    .map_err(|_| CommandError::font_parser_unavailable())?
 }
 
 #[tauri::command]
@@ -119,6 +234,47 @@ fn is_trusted_app_origin(url: &tauri::Url) -> bool {
     cfg!(debug_assertions) && scheme == "http" && host == "localhost" && url.port() == Some(5173)
 }
 
+fn validate_face_id(face_id: &str) -> Result<(), CommandError> {
+    let Some(digest) = face_id.strip_prefix(FACE_ID_PREFIX) else {
+        return Err(CommandError::font_face_unavailable());
+    };
+    if digest.len() != SHA1_HEX_LENGTH || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CommandError::font_face_unavailable());
+    }
+    Ok(())
+}
+
+fn validate_glyph_outline_request(request: &FontGlyphOutlineRequest) -> Result<(), CommandError> {
+    validate_face_id(&request.face_id)?;
+    if char::from_u32(request.codepoint).is_none()
+        || request.variations.len() > MAX_GLYPH_VARIATIONS
+        || request.variations.iter().any(|variation| {
+            variation.tag.len() != 4
+                || !variation
+                    .tag
+                    .bytes()
+                    .all(|byte| byte.is_ascii_graphic() || byte == b' ')
+                || !variation.value.is_finite()
+        })
+    {
+        return Err(CommandError::invalid_glyph_request());
+    }
+    Ok(())
+}
+
+fn map_catalogue_inspection_error(error: &CatalogueInspectionError) -> CommandError {
+    log::error!("Font face inspection failed: {error}");
+    match error {
+        CatalogueInspectionError::UnknownFace | CatalogueInspectionError::DataUnavailable => {
+            CommandError::font_face_unavailable()
+        }
+        CatalogueInspectionError::Parser(
+            FontInspectionError::InvalidCodepoint | FontInspectionError::MissingGlyph,
+        ) => CommandError::font_glyph_unavailable(),
+        CatalogueInspectionError::Parser(_) => CommandError::font_parser_unavailable(),
+    }
+}
+
 fn map_google_fonts_error(error: GoogleFontsError) -> CommandError {
     log::error!("Google Fonts operation failed: {error}");
     match error {
@@ -137,7 +293,9 @@ fn map_google_fonts_error(error: GoogleFontsError) -> CommandError {
 
 #[cfg(test)]
 mod tests {
-    use super::{greet, is_trusted_app_origin};
+    use crate::dto::{FontGlyphOutlineRequest, FontGlyphVariationValue};
+
+    use super::{greet, is_trusted_app_origin, validate_face_id, validate_glyph_outline_request};
 
     #[test]
     fn greeting_uses_a_trimmed_name() {
@@ -161,5 +319,33 @@ mod tests {
         assert!(!is_trusted_app_origin(
             &tauri::Url::parse("https://fonts.google.com/").expect("the remote URL")
         ));
+    }
+
+    #[test]
+    fn parser_commands_only_accept_opaque_face_ids() {
+        assert!(validate_face_id("face:0123456789abcdef0123456789abcdef01234567").is_ok());
+        assert!(validate_face_id("C:\\Windows\\Fonts\\arial.ttf").is_err());
+        assert!(validate_face_id("face:not-a-digest").is_err());
+    }
+
+    #[test]
+    fn glyph_outline_requests_validate_codepoints_and_variations() {
+        let valid = FontGlyphOutlineRequest {
+            face_id: "face:0123456789abcdef0123456789abcdef01234567".to_owned(),
+            codepoint: u32::from('A'),
+            variations: vec![FontGlyphVariationValue {
+                tag: "wght".to_owned(),
+                value: 650.0,
+            }],
+        };
+        assert!(validate_glyph_outline_request(&valid).is_ok());
+
+        let mut invalid = valid.clone();
+        invalid.codepoint = 0x11_0000;
+        assert!(validate_glyph_outline_request(&invalid).is_err());
+
+        invalid = valid;
+        invalid.variations[0].value = f32::NAN;
+        assert!(validate_glyph_outline_request(&invalid).is_err());
     }
 }

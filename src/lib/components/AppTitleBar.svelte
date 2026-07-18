@@ -13,6 +13,7 @@
 		search,
 		loading,
 		theme,
+		settingsActive,
 		onSearch,
 		onNavigate,
 		onToggleTheme,
@@ -22,6 +23,7 @@
 		search: string;
 		loading: boolean;
 		theme: 'system' | 'light' | 'dark';
+		settingsActive: boolean;
 		onSearch: (value: string) => void;
 		onNavigate: (view: AppView) => void;
 		onToggleTheme: () => void;
@@ -174,7 +176,18 @@
 			aria-label="Toggle light and dark theme"
 			title="Toggle light and dark theme"
 		>
-			<Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
+			<Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
+		</button>
+		<button
+			type="button"
+			class:active={settingsActive}
+			class="titlebar-tool"
+			onclick={() => onNavigate('settings')}
+			aria-label="Open settings"
+			aria-current={settingsActive ? 'page' : undefined}
+			title="Settings"
+		>
+			<Icon name="settings" size={17} />
 		</button>
 
 		<div class="window-controls" aria-label="Window controls">
@@ -296,6 +309,11 @@
 	.application-menu summary:hover,
 	.titlebar-tool:hover:not(:disabled),
 	.titlebar-search button:hover {
+		color: #f1f0ea;
+		background: #252620;
+	}
+
+	.titlebar-tool.active {
 		color: #f1f0ea;
 		background: #252620;
 	}

@@ -3,6 +3,7 @@
 
 	import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
 	import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
+	import { getConflictDestination } from '$lib/conflict-navigation';
 	import AppNavigation, { type AppView } from '$lib/components/AppNavigation.svelte';
 	import AppTitleBar from '$lib/components/AppTitleBar.svelte';
 	import ConflictsView from '$lib/components/ConflictsView.svelte';
@@ -18,6 +19,7 @@
 	} from '$lib/components/SettingsView.svelte';
 	import { createBrowserCatalogue } from '$lib/catalogue/browser-catalogue';
 	import { reorderIds, type ReorderPosition } from '$lib/reorder';
+	import { isStickySurfaceElevated } from '$lib/sticky-surface';
 	import { scanInstalledFonts } from '$lib/tauri/commands';
 
 	const PAGE_SIZE = 120;
@@ -67,6 +69,13 @@
 	type Toast = { message: string; tone: 'success' | 'error' };
 
 	let view = $state<AppView>('library');
+	let libraryControlsElement = $state<HTMLElement>();
+	let libraryControlsElevated = $state(false);
+
+	$effect(() => {
+		if (view !== 'library') libraryControlsElevated = false;
+	});
+
 	let catalogue = $state<FontCatalogue | null>(null);
 	let catalogueMode = $state<CatalogueMode>('browser');
 	let loading = $state(true);
@@ -395,9 +404,23 @@
 		);
 	}
 
+	function reviewConflict(familyId: string) {
+		selectFamily(familyId);
+		view = getConflictDestination('review');
+	}
+
 	function inspectConflict(familyId: string) {
 		selectFamily(familyId);
-		view = 'library';
+		view = getConflictDestination('inspect');
+	}
+
+	function handleLibraryScroll(event: Event) {
+		const scrollContainer = event.currentTarget as HTMLElement;
+		const elevated = isStickySurfaceElevated(
+			scrollContainer.scrollTop,
+			libraryControlsElement?.offsetTop ?? Number.POSITIVE_INFINITY
+		);
+		if (elevated !== libraryControlsElevated) libraryControlsElevated = elevated;
 	}
 
 	function handleRowKeydown(event: KeyboardEvent, index: number) {
@@ -602,6 +625,7 @@
 	{search}
 	{loading}
 	{theme}
+	settingsActive={view === 'settings'}
 	onSearch={updateGlobalSearch}
 	onNavigate={(nextView) => (view = nextView)}
 	onToggleTheme={toggleTheme}
@@ -633,46 +657,60 @@
 
 	<main id="main-content">
 		{#if view === 'library'}
-			<section class="library-view" aria-labelledby="library-title">
-				<div class="specimen-feed" style={`--specimen-size: ${specimenSize}px`}>
+			<section
+				class="library-view"
+				aria-labelledby="library-title"
+				onscroll={handleLibraryScroll}
+			>
 				<header class="library-header">
-				<div class="header-lead">
-				<h1 id="library-title">Your fonts</h1>
-				<p class="catalogue-summary">
-				{#if catalogue}
-				{catalogue.familyCount.toLocaleString()} families · {catalogue.faceCount.toLocaleString()}
-				faces{#if catalogueMode === 'native'}
-				· scanned in {catalogue.scanDurationMs.toLocaleString()}
-				ms{/if}
-				{:else if loading}
-				Reading the installed font catalogue…
-				{:else}
-				Catalogue unavailable
-				{/if}
-				</p>
-				</div>
-				<div class="header-actions">
-				<button type="button" class="primary-action" onclick={openPreviewFilePicker}>
-				<svg
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="1.7"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-				aria-hidden="true"
-				width="16"
-				height="16"
-				>
-				<path d="M12 15.5V4.75M8.25 8.5 12 4.75l3.75 3.75" />
-				<path d="M5 14.5v3.25A1.75 1.75 0 0 0 6.75 19.5h10.5A1.75 1.75 0 0 0 19 17.75V14.5" />
-				</svg>
-				<span>Preview a font</span>
-				</button>
-				</div>
+					<div class="header-lead">
+						<h1 id="library-title">Your fonts</h1>
+						<p class="catalogue-summary">
+							{#if catalogue}
+								{catalogue.familyCount.toLocaleString()} families · {catalogue.faceCount.toLocaleString()}
+								faces{#if catalogueMode === 'native'}
+									· scanned in {catalogue.scanDurationMs.toLocaleString()}
+									ms{/if}
+							{:else if loading}
+								Reading the installed font catalogue…
+							{:else}
+								Catalogue unavailable
+							{/if}
+						</p>
+					</div>
+					<div class="header-actions">
+						<button
+							type="button"
+							class="primary-action"
+							onclick={openPreviewFilePicker}
+						>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="1.7"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								aria-hidden="true"
+								width="16"
+								height="16"
+							>
+								<path d="M12 15.5V4.75M8.25 8.5 12 4.75l3.75 3.75" />
+								<path
+									d="M5 14.5v3.25A1.75 1.75 0 0 0 6.75 19.5h10.5A1.75 1.75 0 0 0 19 17.75V14.5"
+								/>
+							</svg>
+							<span>Preview a font</span>
+						</button>
+					</div>
 				</header>
 
-				<section class="library-controls" aria-label="Library controls">
+				<section
+					bind:this={libraryControlsElement}
+					class:is-elevated={libraryControlsElevated}
+					class="library-controls sticky-control-surface"
+					aria-label="Library controls"
+				>
 					<div class="primary-toolbar">
 						<label class="search-control">
 							<span>Search</span>
@@ -916,7 +954,7 @@
 															type="button"
 															class="detail-action ghost"
 															onclick={() =>
-																inspectConflict(family.id)}
+																reviewConflict(family.id)}
 														>
 															<Icon name="alert" size={15} /> Review conflict
 														</button>
@@ -1070,7 +1108,8 @@
 		height: 100%;
 		min-height: 0;
 		flex-direction: column;
-		overflow: hidden;
+		overflow-x: hidden;
+		overflow-y: auto;
 		background: var(--color-surface);
 	}
 
@@ -1156,12 +1195,12 @@
 
 	/* Controls — shared vocabulary with the Discover view */
 	.library-controls {
-		position: relative;
-		z-index: 2;
+		position: sticky;
+		top: 0;
+		z-index: var(--z-sticky);
 		width: 100%;
 		min-width: 0;
 		flex: none;
-		background: var(--color-panel);
 	}
 
 	.primary-toolbar {
@@ -1357,9 +1396,8 @@
 		width: 100%;
 		min-width: 0;
 		min-height: 0;
-		flex: 1;
-		overflow-x: hidden;
-		overflow-y: auto;
+		flex: none;
+		overflow: visible;
 		background: var(--color-surface);
 	}
 
@@ -1954,68 +1992,68 @@
 		}
 	}
 
-  .library-header {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  flex: none;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2xl);
-  padding: 18px 24px 14px;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface);
-  }
+	.library-header {
+		display: flex;
+		width: 100%;
+		min-width: 0;
+		flex: none;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-2xl);
+		padding: 18px 24px 14px;
+		border-bottom: 1px solid var(--color-border);
+		background: var(--color-surface);
+	}
 
-  .header-lead {
-  min-width: 0;
-  }
+	.header-lead {
+		min-width: 0;
+	}
 
-  .library-header h1 {
-  margin: 0;
-  font-size: var(--text-heading);
-  line-height: 1.15;
-  letter-spacing: -0.03em;
-  text-wrap: balance;
-  }
+	.library-header h1 {
+		margin: 0;
+		font-size: var(--text-heading);
+		line-height: 1.15;
+		letter-spacing: -0.03em;
+		text-wrap: balance;
+	}
 
-  .catalogue-summary {
-  margin: 5px 0 0;
-  color: var(--color-muted);
-  font-size: var(--text-micro);
-  font-variant-numeric: tabular-nums;
-  }
+	.catalogue-summary {
+		margin: 5px 0 0;
+		color: var(--color-muted);
+		font-size: var(--text-micro);
+		font-variant-numeric: tabular-nums;
+	}
 
-  .header-actions {
-  display: flex;
-  flex: none;
-  gap: var(--space-sm);
-  }
+	.header-actions {
+		display: flex;
+		flex: none;
+		gap: var(--space-sm);
+	}
 
-  .primary-action {
-  display: inline-flex;
-  height: 36px;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 0 12px;
-  border: 1px solid var(--color-accent);
-  border-radius: var(--radius-md);
-  color: var(--color-accent-ink);
-  background: var(--color-accent);
-  font-size: var(--text-label);
-  font-weight: 650;
-  cursor: pointer;
-  transition:
-  background var(--motion-fast),
-  transform var(--motion-fast);
-  }
+	.primary-action {
+		display: inline-flex;
+		height: 36px;
+		align-items: center;
+		justify-content: center;
+		gap: 7px;
+		padding: 0 12px;
+		border: 1px solid var(--color-accent);
+		border-radius: var(--radius-md);
+		color: var(--color-accent-ink);
+		background: var(--color-accent);
+		font-size: var(--text-label);
+		font-weight: 650;
+		cursor: pointer;
+		transition:
+			background var(--motion-fast),
+			transform var(--motion-fast);
+	}
 
-  .primary-action:hover {
-  background: var(--color-accent-hover);
-  }
+	.primary-action:hover {
+		background: var(--color-accent-hover);
+	}
 
-  .primary-action:active {
-  transform: translateY(1px);
-  }
+	.primary-action:active {
+		transform: translateY(1px);
+	}
 </style>

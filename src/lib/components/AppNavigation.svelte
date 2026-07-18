@@ -181,20 +181,6 @@
 			</nav>
 		{/if}
 
-		<nav class="system-navigation" aria-label="System navigation">
-			<p class="nav-group-label">System</p>
-			<button
-				type="button"
-				class:active={view === 'settings'}
-				aria-current={view === 'settings' ? 'page' : undefined}
-				title={collapsed ? 'Settings' : undefined}
-				onclick={() => onNavigate('settings')}
-			>
-				<Icon name="settings" size={17} />
-				<span class="nav-label">Settings</span>
-			</button>
-		</nav>
-
 		<div class="catalogue-status">
 			<div class="status-line">
 				<span class:scanning={loading} class="status-indicator"></span>
@@ -205,16 +191,29 @@
 							? 'Catalogue ready'
 							: 'Browser preview'}</strong
 				>
-				<button
-					type="button"
-					class="icon-button"
-					disabled={loading}
-					aria-label="Scan fonts again"
-					title="Scan fonts again"
-					onclick={onRefresh}
-				>
-					<Icon name="refresh" size={15} />
-				</button>
+				<div class="status-actions">
+					<button
+						type="button"
+						class="icon-button"
+						disabled={loading}
+						aria-label="Scan fonts again"
+						title="Scan fonts again"
+						onclick={onRefresh}
+					>
+						<Icon name="refresh" size={15} />
+					</button>
+					<button
+						type="button"
+						class:active={view === 'settings'}
+						class="icon-button"
+						aria-label="Open settings"
+						aria-current={view === 'settings' ? 'page' : undefined}
+						title="Settings"
+						onclick={() => onNavigate('settings')}
+					>
+						<Icon name="settings" size={15} />
+					</button>
+				</div>
 			</div>
 			<p>
 				{mode === 'native'
@@ -329,8 +328,7 @@
 		margin-top: 12px;
 	}
 
-	.preview-navigation,
-	.system-navigation {
+	.preview-navigation {
 		margin-top: 16px;
 	}
 
@@ -527,6 +525,11 @@
 		animation: status-pulse 1.2s ease-in-out infinite;
 	}
 
+	.status-actions {
+		display: flex;
+		align-items: center;
+	}
+
 	.catalogue-status p {
 		margin: 5px 0 0 14px;
 		color: var(--color-subtle);
@@ -536,8 +539,8 @@
 
 	.icon-button {
 		display: grid;
-		width: 30px;
-		height: 30px;
+		width: 28px;
+		height: 28px;
 		place-items: center;
 		border: 0;
 		border-radius: var(--radius-sm);
@@ -547,6 +550,11 @@
 	}
 
 	.icon-button:hover:not(:disabled) {
+		color: var(--color-text);
+		background: var(--color-selected);
+	}
+
+	.icon-button.active {
 		color: var(--color-text);
 		background: var(--color-selected);
 	}
@@ -591,6 +599,10 @@
 			display: flex;
 			flex-direction: column;
 			gap: 5px;
+		}
+
+		.collapsed .status-actions {
+			flex-direction: column;
 		}
 	}
 
@@ -655,10 +667,6 @@
 		.preview-nav-item.drop-after::after {
 			right: -2px;
 			left: auto;
-		}
-
-		.system-navigation {
-			margin-left: 4px;
 		}
 
 		nav button {
