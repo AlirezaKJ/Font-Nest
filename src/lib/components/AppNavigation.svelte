@@ -161,7 +161,7 @@
 							aria-current={view === 'preview' && activeFamilyId === family.id
 								? 'page'
 								: undefined}
-							title={collapsed ? family.name : undefined}
+							title={family.name}
 							onclick={() => onOpenPreview(family.id)}
 						>
 							<Icon name="font" size={17} />
@@ -380,6 +380,13 @@
 	nav button.active {
 		color: var(--color-text);
 		background: var(--color-selected);
+	}
+
+	.nav-label {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.preview-nav-item {

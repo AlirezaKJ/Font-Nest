@@ -70,6 +70,10 @@ pub struct FontCatalogue {
 pub struct GoogleFontPageRequest {
     pub query: String,
     pub category: String,
+    pub subset: String,
+    pub technology: String,
+    pub availability: String,
+    pub sort: String,
     pub offset: u32,
     pub limit: u32,
 }
@@ -85,6 +89,8 @@ pub struct GoogleFontFamilySummary {
     pub license: String,
     pub artifact_count: u32,
     pub preview_artifact_id: String,
+    pub variable: bool,
+    pub last_modified: String,
     pub installed: bool,
 }
 

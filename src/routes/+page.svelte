@@ -6,8 +6,10 @@
 	import AppNavigation, { type AppView } from '$lib/components/AppNavigation.svelte';
 	import AppTitleBar from '$lib/components/AppTitleBar.svelte';
 	import ConflictsView from '$lib/components/ConflictsView.svelte';
+	import DiscoverFilterMenu, {
+		type DiscoverFilterOption
+	} from '$lib/components/DiscoverFilterMenu.svelte';
 	import DiscoverView from '$lib/components/DiscoverView.svelte';
-	import FontInspector from '$lib/components/FontInspector.svelte';
 	import FontPreviewView from '$lib/components/FontPreviewView.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import SettingsView, {
@@ -19,11 +21,49 @@
 	import { scanInstalledFonts } from '$lib/tauri/commands';
 
 	const PAGE_SIZE = 120;
-	const SKELETON_ROWS = [0, 1, 2, 3, 4, 5, 6];
+	const SKELETON_ROWS = [0, 1, 2, 3];
 	const DEFAULT_PREVIEW = 'Hamburgefontsiv 0123 — Pack my box with five dozen liquor jugs.';
+	const DEFAULT_SPECIMEN_SIZE = 96;
+	const MAX_DETAIL_FACES = 12;
 	const PREFERENCES_KEY = 'fontnest.preferences.v1';
+	const GLYPH_SAMPLE = [
+		'A',
+		'a',
+		'g',
+		'R',
+		'Q',
+		'y',
+		'ß',
+		'Æ',
+		'ø',
+		'Ж',
+		'7',
+		'&',
+		'@',
+		'½',
+		'→'
+	];
+
+	const SPACING_OPTIONS: DiscoverFilterOption[] = [
+		{ value: 'all', label: 'Any spacing' },
+		{ value: 'proportional', label: 'Proportional' },
+		{ value: 'monospaced', label: 'Monospaced' }
+	];
+	const STATUS_OPTIONS: DiscoverFilterOption[] = [
+		{ value: 'all', label: 'Any status' },
+		{ value: 'conflict', label: 'Conflicts only', description: 'Families with duplicate files' }
+	];
+	const SORT_OPTIONS: DiscoverFilterOption[] = [
+		{ value: 'name-asc', label: 'Name A–Z' },
+		{ value: 'name-desc', label: 'Name Z–A' },
+		{ value: 'styles', label: 'Most styles' },
+		{ value: 'faces', label: 'Most faces' }
+	];
 
 	type CatalogueMode = 'native' | 'browser';
+	type SpecimenMode = 'names' | 'custom';
+	type LibraryFilterKey = 'source' | 'format' | 'spacing' | 'status' | 'sort';
+	type ActiveLibraryFilter = { key: LibraryFilterKey; label: string };
 	type Toast = { message: string; tone: 'success' | 'error' };
 
 	let view = $state<AppView>('library');
@@ -33,10 +73,13 @@
 	let errorMessage = $state('');
 	let selectedFamilyId = $state<string | null>(null);
 	let search = $state('');
-	let sourceFilter = $state('All');
-	let formatFilter = $state('All');
-	let monospacedOnly = $state(false);
-	let conflictsOnly = $state(false);
+	let sourceFilter = $state('all');
+	let formatFilter = $state('all');
+	let spacingFilter = $state('all');
+	let statusFilter = $state('all');
+	let sortOrder = $state('name-asc');
+	let specimenMode = $state<SpecimenMode>('names');
+	let specimenSize = $state(DEFAULT_SPECIMEN_SIZE);
 	let displayLimit = $state(PAGE_SIZE);
 	let previewText = $state(DEFAULT_PREVIEW);
 	let previewSize = $state(64);
@@ -49,21 +92,46 @@
 	let previewFileInput = $state<HTMLInputElement>();
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
-	let sourceOptions = $derived.by(() => {
-		const values = new Set(catalogue?.families.flatMap((family) => family.sources) ?? []);
-		return ['All', ...Array.from(values).sort()];
+	let sourceOptions = $derived.by<DiscoverFilterOption[]>(() => {
+		const values = [
+			...new Set(catalogue?.families.flatMap((family) => family.sources) ?? [])
+		].sort();
+		return [
+			{ value: 'all', label: 'All sources' },
+			...values.map((value) => ({ value, label: value }))
+		];
 	});
 
-	let formatOptions = $derived.by(() => {
-		const values = new Set(catalogue?.families.flatMap((family) => family.formats) ?? []);
-		return ['All', ...Array.from(values).sort()];
+	let formatOptions = $derived.by<DiscoverFilterOption[]>(() => {
+		const values = [
+			...new Set(catalogue?.families.flatMap((family) => family.formats) ?? [])
+		].sort();
+		return [
+			{ value: 'all', label: 'All formats' },
+			...values.map((value) => ({ value, label: value }))
+		];
 	});
 
-	let activeFilterCount = $derived(
-		Number(sourceFilter !== 'All') +
-			Number(formatFilter !== 'All') +
-			Number(monospacedOnly) +
-			Number(conflictsOnly)
+	let activeFilters = $derived.by<ActiveLibraryFilter[]>(() => {
+		const filters: ActiveLibraryFilter[] = [];
+		if (sourceFilter !== 'all')
+			filters.push({ key: 'source', label: optionLabel(sourceOptions, sourceFilter) });
+		if (formatFilter !== 'all')
+			filters.push({ key: 'format', label: optionLabel(formatOptions, formatFilter) });
+		if (spacingFilter !== 'all')
+			filters.push({ key: 'spacing', label: optionLabel(SPACING_OPTIONS, spacingFilter) });
+		if (statusFilter !== 'all')
+			filters.push({ key: 'status', label: optionLabel(STATUS_OPTIONS, statusFilter) });
+		if (sortOrder !== 'name-asc')
+			filters.push({ key: 'sort', label: optionLabel(SORT_OPTIONS, sortOrder) });
+		return filters;
+	});
+
+	let hasResettableState = $derived(
+		Boolean(search) ||
+			activeFilters.length > 0 ||
+			specimenMode !== 'names' ||
+			specimenSize !== DEFAULT_SPECIMEN_SIZE
 	);
 
 	let filteredFamilies = $derived.by(() => {
@@ -73,17 +141,27 @@
 			.map((term) => term.trim())
 			.filter(Boolean);
 
-		return (catalogue?.families ?? []).filter((family) => {
+		const matching = (catalogue?.families ?? []).filter((family) => {
 			const searchable = [family.name, ...family.styles, ...family.sources, ...family.formats]
 				.join(' ')
 				.toLocaleLowerCase();
 			return (
 				terms.every((term) => searchable.includes(term)) &&
-				(sourceFilter === 'All' || family.sources.includes(sourceFilter)) &&
-				(formatFilter === 'All' || family.formats.includes(formatFilter)) &&
-				(!monospacedOnly || family.monospaced) &&
-				(!conflictsOnly || family.hasConflict)
+				(sourceFilter === 'all' || family.sources.includes(sourceFilter)) &&
+				(formatFilter === 'all' || family.formats.includes(formatFilter)) &&
+				(spacingFilter === 'all' ||
+					family.monospaced === (spacingFilter === 'monospaced')) &&
+				(statusFilter === 'all' || family.hasConflict)
 			);
+		});
+
+		return matching.sort((left, right) => {
+			if (sortOrder === 'name-desc') return right.name.localeCompare(left.name);
+			if (sortOrder === 'styles')
+				return right.faceCount - left.faceCount || left.name.localeCompare(right.name);
+			if (sortOrder === 'faces')
+				return right.fileCount - left.fileCount || left.name.localeCompare(right.name);
+			return left.name.localeCompare(right.name);
 		});
 	});
 
@@ -228,7 +306,7 @@
 
 		if (!isNative) {
 			catalogue = createBrowserCatalogue();
-			selectedFamilyId = catalogue.families[0]?.id ?? null;
+			selectedFamilyId = null;
 			previewWeight = nearestWeight(catalogue.families[0]?.weights ?? [400], 400);
 			loading = false;
 			return;
@@ -236,7 +314,7 @@
 
 		try {
 			catalogue = await scanInstalledFonts();
-			selectedFamilyId = catalogue.families[0]?.id ?? null;
+			selectedFamilyId = null;
 			previewWeight = nearestWeight(catalogue.families[0]?.weights ?? [400], 400);
 		} catch (error) {
 			catalogue = null;
@@ -334,8 +412,7 @@
 
 		const next = renderedFamilies[nextIndex];
 		if (!next) return;
-		selectFamily(next.id);
-		document.querySelectorAll<HTMLButtonElement>('.font-row-select')[nextIndex]?.focus();
+		document.querySelectorAll<HTMLButtonElement>('.specimen-toggle')[nextIndex]?.focus();
 	}
 
 	function updateSearch(value: string) {
@@ -354,12 +431,45 @@
 		});
 	}
 
-	function clearFilters() {
-		sourceFilter = 'All';
-		formatFilter = 'All';
-		monospacedOnly = false;
-		conflictsOnly = false;
+	function updateFilter(key: LibraryFilterKey, value: string) {
+		if (key === 'source') sourceFilter = value;
+		if (key === 'format') formatFilter = value;
+		if (key === 'spacing') spacingFilter = value;
+		if (key === 'status') statusFilter = value;
+		if (key === 'sort') sortOrder = value;
 		displayLimit = PAGE_SIZE;
+	}
+
+	function clearFilter(key: LibraryFilterKey) {
+		updateFilter(key, key === 'sort' ? 'name-asc' : 'all');
+	}
+
+	function clearFilters() {
+		sourceFilter = 'all';
+		formatFilter = 'all';
+		spacingFilter = 'all';
+		statusFilter = 'all';
+		sortOrder = 'name-asc';
+		displayLimit = PAGE_SIZE;
+	}
+
+	function resetAll() {
+		search = '';
+		clearFilters();
+		specimenMode = 'names';
+		specimenSize = DEFAULT_SPECIMEN_SIZE;
+	}
+
+	function optionLabel(options: DiscoverFilterOption[], value: string): string {
+		return options.find((option) => option.value === value)?.label ?? value;
+	}
+
+	function toggleFamily(familyId: string) {
+		if (selectedFamilyId === familyId) {
+			selectedFamilyId = null;
+			return;
+		}
+		selectFamily(familyId);
 	}
 
 	function safeFontStack(name: string): string {
@@ -370,14 +480,12 @@
 		return `font-family: ${safeFontStack(family.name)}; font-weight: ${nearestWeight(family.weights, 400)};`;
 	}
 
-	function familyMeta(family: FontFamilySummary): string {
-		return [
-			family.sources.join(' · '),
-			family.formats.join(' · '),
-			family.monospaced ? 'Monospaced' : ''
-		]
-			.filter(Boolean)
-			.join(' · ');
+	function faceSpecimenStyle(family: FontFamilySummary, weight: number, style: string): string {
+		return `font-family: ${safeFontStack(family.name)}; font-weight: ${weight}; font-style: ${style === 'italic' ? 'italic' : 'normal'};`;
+	}
+
+	function specimenText(family: FontFamilySummary): string {
+		return specimenMode === 'names' ? family.name : previewText.trim() || family.name;
 	}
 
 	function openPreviewFilePicker() {
@@ -525,233 +633,366 @@
 
 	<main id="main-content">
 		{#if view === 'library'}
-			<section class="library-workspace" aria-labelledby="library-title">
-				<div class="library-pane">
-					<header class="library-header">
-						<div class="heading-row">
-							<div>
-								<p class="section-label">Font library</p>
-								<h1 id="library-title">Your fonts</h1>
-								<p class="catalogue-summary">
-									{#if catalogue}
-										{catalogue.familyCount.toLocaleString()} families · {catalogue.faceCount.toLocaleString()}
-										faces
-										{#if catalogueMode === 'native'}
-											· scanned in {catalogue.scanDurationMs.toLocaleString()}
-											ms
-										{/if}
-									{:else if loading}
-										Reading the installed font catalogue…
-									{:else}
-										Catalogue unavailable
-									{/if}
-								</p>
-							</div>
-							<div class="header-actions">
-								<button
-									type="button"
-									class="primary-action"
-									onclick={openPreviewFilePicker}
-								>
-									<Icon name="upload" size={16} /> <span>Preview a font</span>
-								</button>
-							</div>
-						</div>
+			<section class="library-view" aria-labelledby="library-title">
+				<div class="specimen-feed" style={`--specimen-size: ${specimenSize}px`}>
+				<header class="library-header">
+				<div class="header-lead">
+				<h1 id="library-title">Your fonts</h1>
+				<p class="catalogue-summary">
+				{#if catalogue}
+				{catalogue.familyCount.toLocaleString()} families · {catalogue.faceCount.toLocaleString()}
+				faces{#if catalogueMode === 'native'}
+				· scanned in {catalogue.scanDurationMs.toLocaleString()}
+				ms{/if}
+				{:else if loading}
+				Reading the installed font catalogue…
+				{:else}
+				Catalogue unavailable
+				{/if}
+				</p>
+				</div>
+				<div class="header-actions">
+				<button type="button" class="primary-action" onclick={openPreviewFilePicker}>
+				<svg
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="1.7"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+				aria-hidden="true"
+				width="16"
+				height="16"
+				>
+				<path d="M12 15.5V4.75M8.25 8.5 12 4.75l3.75 3.75" />
+				<path d="M5 14.5v3.25A1.75 1.75 0 0 0 6.75 19.5h10.5A1.75 1.75 0 0 0 19 17.75V14.5" />
+				</svg>
+				<span>Preview a font</span>
+				</button>
+				</div>
+				</header>
 
-						<div class="toolbar">
-							<details class="filter-menu">
-								<summary>
-									<Icon name="filter" size={16} />
-									Filters{#if activeFilterCount}
-										· {activeFilterCount}{/if}
-								</summary>
-								<div class="filter-panel">
-									<div class="filter-panel-head">
-										<strong>Filter catalogue</strong>
-										<button
-											type="button"
-											disabled={!activeFilterCount}
-											onclick={clearFilters}
-										>
-											Clear
-										</button>
-									</div>
-									<label>
-										<span>Source</span>
-										<select
-											value={sourceFilter}
-											onchange={(event) => {
-												sourceFilter = event.currentTarget.value;
-												displayLimit = PAGE_SIZE;
-											}}
-										>
-											{#each sourceOptions as option (option)}<option
-													value={option}>{option}</option
-												>{/each}
-										</select>
-									</label>
-									<label>
-										<span>Format</span>
-										<select
-											value={formatFilter}
-											onchange={(event) => {
-												formatFilter = event.currentTarget.value;
-												displayLimit = PAGE_SIZE;
-											}}
-										>
-											{#each formatOptions as option (option)}<option
-													value={option}>{option}</option
-												>{/each}
-										</select>
-									</label>
-									<label class="check-filter">
-										<input type="checkbox" bind:checked={monospacedOnly} />
-										<span>Monospaced families only</span>
-									</label>
-									<label class="check-filter">
-										<input type="checkbox" bind:checked={conflictsOnly} />
-										<span>Potential conflicts only</span>
-									</label>
-								</div>
-							</details>
+				<section class="library-controls" aria-label="Library controls">
+					<div class="primary-toolbar">
+						<label class="search-control">
+							<span>Search</span>
+							<Icon name="search" size={15} />
+							<input
+								data-font-search
+								type="search"
+								placeholder="Families, styles, sources"
+								value={search}
+								oninput={(event) => updateSearch(event.currentTarget.value)}
+							/>
+						</label>
+						<div class="filter-strip">
+							<DiscoverFilterMenu
+								id="library-source"
+								label="Source"
+								value={sourceFilter}
+								options={sourceOptions}
+								onChange={(value) => updateFilter('source', value)}
+							/>
+							<DiscoverFilterMenu
+								id="library-format"
+								label="Format"
+								value={formatFilter}
+								options={formatOptions}
+								onChange={(value) => updateFilter('format', value)}
+							/>
+							<DiscoverFilterMenu
+								id="library-spacing"
+								label="Spacing"
+								value={spacingFilter}
+								options={SPACING_OPTIONS}
+								onChange={(value) => updateFilter('spacing', value)}
+							/>
+							<DiscoverFilterMenu
+								id="library-status"
+								label="Status"
+								value={statusFilter}
+								options={STATUS_OPTIONS}
+								onChange={(value) => updateFilter('status', value)}
+							/>
+							<DiscoverFilterMenu
+								id="library-sort"
+								label="Sort"
+								value={sortOrder}
+								options={SORT_OPTIONS}
+								onChange={(value) => updateFilter('sort', value)}
+							/>
 						</div>
-					</header>
-
-					<div class="table-head" aria-hidden="true">
-						<span>Family</span><span>Preview</span><span>Styles</span>
 					</div>
 
-					<div class="font-list" aria-label="Font families">
-						{#if loading && !catalogue}
-							{#each SKELETON_ROWS as index (index)}
-								<div class="font-row skeleton-row" aria-hidden="true">
-									<span
-										class="skeleton family-skeleton"
-										style={`--skeleton-index: ${index}`}
-									></span>
-									<span
-										class="skeleton preview-skeleton"
-										style={`--skeleton-index: ${index}`}
-									></span>
-									<span
-										class="skeleton count-skeleton"
-										style={`--skeleton-index: ${index}`}
-									></span>
+					<div class="specimen-toolbar">
+						<label class="preview-text-control">
+							<span>Preview text</span>
+							<Icon name="font" size={15} />
+							<input
+								type="text"
+								value={previewText}
+								placeholder="Type a shared specimen"
+								disabled={specimenMode === 'names'}
+								oninput={(event) => setPreviewText(event.currentTarget.value)}
+							/>
+						</label>
+						<div class="specimen-modes" role="group" aria-label="Specimen text mode">
+							<button
+								type="button"
+								class:active={specimenMode === 'names'}
+								aria-pressed={specimenMode === 'names'}
+								onclick={() => (specimenMode = 'names')}>Names</button
+							>
+							<button
+								type="button"
+								class:active={specimenMode === 'custom'}
+								aria-pressed={specimenMode === 'custom'}
+								onclick={() => (specimenMode = 'custom')}>Your text</button
+							>
+						</div>
+						<label class="size-control">
+							<span>Size</span>
+							<input
+								type="range"
+								min="48"
+								max="148"
+								step="4"
+								value={specimenSize}
+								oninput={(event) =>
+									(specimenSize = Number(event.currentTarget.value))}
+							/>
+							<output>{specimenSize}px</output>
+						</label>
+						<div class="active-filter-summary" aria-live="polite">
+							{#if activeFilters.length}
+								{#each activeFilters as filter (filter.key)}
+									<button
+										type="button"
+										aria-label={`Remove ${filter.label} filter`}
+										onclick={() => clearFilter(filter.key)}
+									>
+										{filter.label}<Icon name="close" size={12} />
+									</button>
+								{/each}
+							{:else}
+								<span>All families</span>
+							{/if}
+						</div>
+						<button
+							type="button"
+							class="reset-action"
+							disabled={!hasResettableState}
+							onclick={resetAll}>Reset all</button
+						>
+					</div>
+				</section>
+
+				<div class="specimen-feed" style={`--specimen-size: ${specimenSize}px`}>
+					<div class="catalogue-heading">
+						<strong>{filteredFamilies.length.toLocaleString()} families</strong>
+						<span>Rendered in the fonts installed on this computer</span>
+					</div>
+
+					{#if loading && !catalogue}
+						<div class="specimen-list" aria-label="Loading font families">
+							{#each SKELETON_ROWS as row (row)}
+								<div class="specimen-entry loading-entry" aria-hidden="true">
+									<div class="loading-meta">
+										<span></span><span></span><span></span>
+									</div>
+									<div class="specimen-skeleton">
+										<span></span><span></span><span></span>
+									</div>
 								</div>
 							{/each}
-						{:else if errorMessage}
-							<div class="state-view" role="alert">
-								<div class="state-icon error">
-									<Icon name="alert" size={22} />
-								</div>
-								<h2>Catalogue scan did not finish</h2>
-								<p>{errorMessage}</p>
-								<button type="button" onclick={() => void refreshCatalogue()}
-									>Scan again</button
-								>
-							</div>
-						{:else if !catalogue?.familyCount}
-							<div class="state-view">
-								<div class="state-icon"><Icon name="font" size={23} /></div>
-								<h2>No installed fonts found</h2>
-								<p>
-									Scan again, or open a font file to preview it without installing
-									anything.
-								</p>
-								<button type="button" onclick={openPreviewFilePicker}
-									>Preview a font file</button
-								>
-							</div>
-						{:else if !renderedFamilies.length}
-							<div class="state-view">
-								<div class="state-icon"><Icon name="search" size={22} /></div>
-								<h2>No families match</h2>
-								<p>Try a shorter search, or clear the active catalogue filters.</p>
-								<button
-									type="button"
-									onclick={() => {
-										search = '';
-										clearFilters();
-									}}
-								>
-									Clear search and filters
-								</button>
-							</div>
-						{:else}
+						</div>
+					{:else if errorMessage}
+						<div class="catalogue-state" role="alert">
+							<div class="state-icon error"><Icon name="alert" size={20} /></div>
+							<h2>Catalogue scan did not finish</h2>
+							<p>{errorMessage}</p>
+							<button type="button" onclick={() => void refreshCatalogue()}
+								>Scan again</button
+							>
+						</div>
+					{:else if !catalogue?.familyCount}
+						<div class="catalogue-state">
+							<div class="state-icon"><Icon name="font" size={20} /></div>
+							<h2>No installed fonts found</h2>
+							<p>
+								Scan again, or open a font file to preview it without installing
+								anything.
+							</p>
+							<button type="button" onclick={openPreviewFilePicker}
+								>Preview a font file</button
+							>
+						</div>
+					{:else if !renderedFamilies.length}
+						<div class="catalogue-state">
+							<div class="state-icon"><Icon name="search" size={20} /></div>
+							<h2>No families match</h2>
+							<p>Try a shorter search, or remove one of the active filters.</p>
+							<button
+								type="button"
+								onclick={() => {
+									search = '';
+									clearFilters();
+								}}>Clear search and filters</button
+							>
+						</div>
+					{:else}
+						<div class="specimen-list" aria-label="Font families">
 							{#each renderedFamilies as family, index (family.id)}
-								<div
-									class:selected={selectedFamily?.id === family.id}
-									class="font-row"
+								<article
+									class:selected={selectedFamilyId === family.id}
+									class="specimen-entry"
 								>
 									<button
 										type="button"
-										class="font-row-select"
-										aria-pressed={selectedFamily?.id === family.id}
-										tabindex={selectedFamily?.id === family.id ? 0 : -1}
-										onclick={() => selectFamily(family.id)}
+										class="specimen-toggle"
+										aria-expanded={selectedFamilyId === family.id}
+										aria-controls={`family-details-${family.id}`}
+										onclick={() => toggleFamily(family.id)}
 										onkeydown={(event) => handleRowKeydown(event, index)}
 									>
-										<span class="family-cell">
+										<span class="family-line">
 											<strong>{family.name}</strong>
-											<small>{familyMeta(family)}</small>
+											<span class="meta-source"
+												>{family.sources.join(' · ')}</span
+											>
+											<span class="meta-format"
+												>{family.formats.join(' · ')}</span
+											>
+											<span class="meta-count">
+												{family.faceCount}
+												{family.faceCount === 1 ? 'style' : 'styles'}
+											</span>
+											<span class="meta-spacing"
+												>{family.monospaced
+													? 'Monospaced'
+													: 'Proportional'}</span
+											>
+											{#if family.hasConflict}
+												<span class="conflict-label"
+													><Icon name="alert" size={12} /> Conflict</span
+												>
+											{/if}
+											<span class="open-label">
+												{selectedFamilyId === family.id
+													? 'Close'
+													: 'Open family'}
+												<Icon name="chevron" size={13} />
+											</span>
 										</span>
 										<span
-											class="preview-cell"
+											class="specimen-canvas"
 											style={familyPreviewStyle(family)}
 										>
-											{previewText || DEFAULT_PREVIEW}
-										</span>
-										<span class="style-cell">
-											{family.faceCount}
-											{family.faceCount === 1 ? 'style' : 'styles'}
-											{#if family.hasConflict}<small
-													><Icon name="alert" size={12} /> Conflict</small
-												>{/if}
+											<span class="specimen-text">{specimenText(family)}</span
+											>
 										</span>
 									</button>
-									<button
-										type="button"
-										class:pinned={pinnedFamilyIds.includes(family.id)}
-										class="preview-page-action"
-										tabindex={selectedFamily?.id === family.id ? 0 : -1}
-										aria-label={pinnedFamilyIds.includes(family.id)
-											? `Open saved preview for ${family.name}`
-											: `Save and open preview for ${family.name}`}
-										title={pinnedFamilyIds.includes(family.id)
-											? 'Open saved preview'
-											: 'Save and open preview'}
-										onclick={() => openFamilyPreview(family.id)}
-									>
-										<Icon name="bookmark" size={16} />
-									</button>
-								</div>
-							{/each}
-							{#if renderedFamilies.length < filteredFamilies.length}
-								<div class="load-more-row">
-									<button
-										type="button"
-										onclick={() => (displayLimit += PAGE_SIZE)}
-									>
-										Show {Math.min(
-											PAGE_SIZE,
-											filteredFamilies.length - renderedFamilies.length
-										)} more
-									</button>
-								</div>
-							{/if}
-						{/if}
-					</div>
-				</div>
 
-				<FontInspector
-					family={selectedFamily}
-					{previewText}
-					{previewSize}
-					{previewWeight}
-					onPreviewText={setPreviewText}
-					onPreviewSize={(value) => (previewSize = value)}
-					onPreviewWeight={(value) => (previewWeight = value)}
-				/>
+									{#if selectedFamilyId === family.id}
+										<section
+											id={`family-details-${family.id}`}
+											class="family-details"
+										>
+											<div class="detail-heading">
+												<div>
+													<strong
+														>{family.faceCount} faces · {family.fileCount}
+														files</strong
+													>
+													<p>
+														{family.formats.join(' · ')} · {family.monospaced
+															? 'Monospaced'
+															: 'Proportional'}
+													</p>
+												</div>
+												<div class="detail-actions">
+													{#if family.hasConflict}
+														<button
+															type="button"
+															class="detail-action ghost"
+															onclick={() =>
+																inspectConflict(family.id)}
+														>
+															<Icon name="alert" size={15} /> Review conflict
+														</button>
+													{/if}
+													<button
+														type="button"
+														class:pinned={pinnedFamilyIds.includes(
+															family.id
+														)}
+														class="detail-action"
+														onclick={() => openFamilyPreview(family.id)}
+													>
+														<Icon name="bookmark" size={15} />
+														{pinnedFamilyIds.includes(family.id)
+															? 'Open preview'
+															: 'Save & preview'}
+													</button>
+												</div>
+											</div>
+
+											<ul class="face-list">
+												{#each family.faces.slice(0, MAX_DETAIL_FACES) as face (face.id)}
+													<li>
+														<span class="face-meta">
+															<strong>{face.styleName}</strong>
+															<small>{face.fileName}</small>
+														</span>
+														<span
+															class="face-specimen"
+															style={faceSpecimenStyle(
+																family,
+																face.weight,
+																face.style
+															)}>{face.styleName}</span
+														>
+													</li>
+												{/each}
+											</ul>
+											{#if family.faces.length > MAX_DETAIL_FACES}
+												<p class="more-faces">
+													+{family.faces.length - MAX_DETAIL_FACES} more faces
+												</p>
+											{/if}
+
+											<div class="glyph-sample">
+												<h3>Character sample</h3>
+												<div
+													class="glyphs"
+													style={`font-family: ${safeFontStack(family.name)}`}
+												>
+													{#each GLYPH_SAMPLE as glyph (glyph)}<span
+															>{glyph}</span
+														>{/each}
+												</div>
+											</div>
+										</section>
+									{/if}
+								</article>
+							{/each}
+						</div>
+
+						{#if renderedFamilies.length < filteredFamilies.length}
+							<div class="load-more-row">
+								<button type="button" onclick={() => (displayLimit += PAGE_SIZE)}>
+									{Math.min(
+										PAGE_SIZE,
+										filteredFamilies.length - renderedFamilies.length
+									)} more
+								</button>
+								<span
+									>{renderedFamilies.length.toLocaleString()} of {filteredFamilies.length.toLocaleString()}</span
+								>
+							</div>
+						{/if}
+					{/if}
+				</div>
 			</section>
 		{:else if view === 'discover'}
 			<DiscoverView
@@ -822,38 +1063,38 @@
 		overflow: auto;
 	}
 
-	.library-workspace {
-		display: grid;
-		grid-template-columns: minmax(480px, 1fr) minmax(300px, 360px);
-		min-height: 100%;
-		background: var(--color-surface);
-	}
-
-	.library-pane {
+	.library-view {
+		display: flex;
+		width: 100%;
 		min-width: 0;
+		height: 100%;
+		min-height: 0;
+		flex-direction: column;
+		overflow: hidden;
 		background: var(--color-surface);
 	}
 
 	.library-header {
-		position: sticky;
-		top: 0;
-		z-index: var(--z-sticky);
-		padding: 20px 24px 14px;
+		display: flex;
+		width: 100%;
+		min-width: 0;
+		flex: none;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-2xl);
+		padding: 18px 24px 14px;
 		border-bottom: 1px solid var(--color-border);
 		background: var(--color-surface);
 	}
 
-	.heading-row,
-	.header-actions,
-	.toolbar {
-		display: flex;
-		align-items: center;
+	.header-lead {
+		min-width: 0;
 	}
 
-	.heading-row {
-		align-items: flex-start;
-		justify-content: space-between;
-		gap: 20px;
+	h1,
+	h2,
+	p {
+		margin-top: 0;
 	}
 
 	.section-label {
@@ -865,10 +1106,10 @@
 		text-transform: uppercase;
 	}
 
-	h1 {
-		margin: 4px 0 0;
+	.library-header h1 {
+		margin: 3px 0 0;
 		font-size: var(--text-heading);
-		line-height: 1.2;
+		line-height: 1.15;
 		letter-spacing: -0.03em;
 		text-wrap: balance;
 	}
@@ -881,397 +1122,654 @@
 	}
 
 	.header-actions {
-		gap: 8px;
+		display: flex;
+		flex: none;
+		gap: var(--space-sm);
 	}
 
-	.primary-action,
-	.filter-menu summary,
-	.state-view button,
-	.load-more-row button {
+	.primary-action {
 		display: inline-flex;
 		height: 36px;
 		align-items: center;
 		justify-content: center;
+		gap: 7px;
+		padding: 0 12px;
+		border: 1px solid var(--color-accent);
 		border-radius: var(--radius-md);
+		color: var(--color-accent-ink);
+		background: var(--color-accent);
 		font-size: var(--text-label);
 		font-weight: 650;
 		cursor: pointer;
 		transition:
 			background var(--motion-fast),
-			color var(--motion-fast),
 			transform var(--motion-fast);
-	}
-
-	.primary-action {
-		gap: 7px;
-		padding: 0 12px;
-		border: 1px solid var(--color-accent);
-		color: var(--color-accent-ink);
-		background: var(--color-accent);
 	}
 
 	.primary-action:hover {
 		background: var(--color-accent-hover);
 	}
 
-	.primary-action:active,
-	.filter-menu summary:active {
+	.primary-action:active {
 		transform: translateY(1px);
 	}
 
-	.toolbar {
-		justify-content: flex-end;
-		gap: 8px;
-		margin-top: 15px;
-	}
-
-	.filter-menu {
+	/* Controls — shared vocabulary with the Discover view */
+	.library-controls {
 		position: relative;
+		z-index: 2;
+		width: 100%;
+		min-width: 0;
 		flex: none;
+		background: var(--color-panel);
 	}
 
-	.filter-menu summary {
-		gap: 7px;
-		padding: 0 11px;
-		border: 1px solid var(--color-border);
-		color: var(--color-text);
-		background: var(--color-control);
-		list-style: none;
-	}
-
-	.filter-menu summary::-webkit-details-marker {
-		display: none;
-	}
-
-	.filter-menu[open] summary,
-	.filter-menu summary:hover {
-		background: var(--color-selected);
-	}
-
-	.filter-panel {
-		position: absolute;
-		top: calc(100% + 8px);
-		right: 0;
-		z-index: var(--z-dropdown);
+	.primary-toolbar {
 		display: grid;
-		width: 292px;
-		gap: 12px;
-		padding: 14px;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-lg);
-		background: var(--color-raised);
-		box-shadow: var(--shadow-floating);
+		width: 100%;
+		min-width: 0;
+		grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.55fr);
+		align-items: center;
+		gap: var(--space-md);
+		padding: 10px 24px;
+		border-bottom: 1px solid var(--color-border);
 	}
 
-	.filter-panel-head {
-		display: flex;
+	.search-control,
+	.preview-text-control {
+		display: grid;
+		min-width: 0;
+		grid-template-columns: auto auto minmax(0, 1fr);
 		align-items: center;
-		justify-content: space-between;
-		gap: 16px;
+		gap: var(--space-sm);
+		padding-left: 10px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		color: var(--color-subtle);
+		background: var(--color-control);
+		font-size: var(--text-micro);
+	}
+
+	.search-control:focus-within,
+	.preview-text-control:focus-within {
+		border-color: var(--color-focus);
+	}
+
+	.search-control input,
+	.preview-text-control input {
+		width: 100%;
+		height: 38px;
+		min-width: 0;
+		border: 0;
+		outline: 0;
+		color: var(--color-text);
+		background: transparent;
 		font-size: var(--text-label);
 	}
 
-	.filter-panel-head button {
-		padding: 4px 6px;
+	.search-control input::placeholder,
+	.preview-text-control input::placeholder {
+		color: var(--color-muted);
+	}
+
+	.preview-text-control input:disabled {
+		color: var(--color-subtle);
+	}
+
+	.filter-strip {
+		display: flex;
+		width: 100%;
+		min-width: 0;
+		align-items: center;
+		justify-content: flex-end;
+		gap: var(--space-sm);
+	}
+
+	.filter-strip :global(.filter-control) {
+		min-width: 0;
+		flex: 1 1 0;
+	}
+
+	.specimen-toolbar {
+		display: flex;
+		width: 100%;
+		min-width: 0;
+		align-items: center;
+		gap: var(--space-md);
+		padding: 10px 24px;
+		border-bottom: 1px solid var(--color-border);
+	}
+
+	.preview-text-control {
+		width: min(340px, 30vw);
+		flex: none;
+	}
+
+	.specimen-modes {
+		display: inline-flex;
+		flex: none;
+		padding: 2px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-control);
+	}
+
+	.specimen-modes button {
+		height: 32px;
+		padding: 0 10px;
 		border: 0;
-		border-radius: var(--radius-xs);
+		border-radius: var(--radius-sm);
 		color: var(--color-muted);
 		background: transparent;
-		font-size: var(--text-micro);
-		font-weight: 600;
+		font-size: var(--text-label);
+		font-weight: 650;
 		cursor: pointer;
 	}
 
-	.filter-panel-head button:disabled {
-		cursor: default;
-		opacity: 0.45;
+	.specimen-modes button:hover {
+		color: var(--color-text);
 	}
 
-	.filter-panel > label:not(.check-filter) {
+	.specimen-modes button.active {
+		color: var(--color-text);
+		background: var(--color-selected);
+	}
+
+	.size-control {
 		display: grid;
-		gap: 6px;
-		color: var(--color-muted);
-		font-size: var(--text-micro);
-		font-weight: 600;
-	}
-
-	.filter-panel select {
-		height: 34px;
-		padding: 0 9px;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-		color: var(--color-text);
-		background: var(--color-control);
-		font-size: var(--text-body-sm);
-	}
-
-	.check-filter {
-		display: flex;
-		min-height: 30px;
+		flex: none;
+		grid-template-columns: auto 96px 48px;
 		align-items: center;
-		gap: 9px;
-		color: var(--color-text);
-		font-size: var(--text-body-sm);
+		gap: var(--space-sm);
+		color: var(--color-subtle);
+		font-size: var(--text-micro);
 	}
 
-	.check-filter input {
-		width: 16px;
-		height: 16px;
+	.size-control input {
 		accent-color: var(--color-accent);
 	}
 
-	.table-head,
-	.font-row-select,
-	.skeleton-row {
-		display: grid;
-		grid-template-columns: minmax(150px, 0.9fr) minmax(210px, 1.45fr) 86px;
-		align-items: center;
-		gap: 16px;
+	.size-control output {
+		color: var(--color-muted);
+		font-size: var(--text-label);
+		font-variant-numeric: tabular-nums;
 	}
 
-	.table-head {
-		height: 32px;
+	.active-filter-summary {
+		display: flex;
+		min-width: 0;
+		flex: 1;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 6px;
+		overflow-x: auto;
+	}
+
+	.active-filter-summary > span {
+		color: var(--color-subtle);
+		font-size: var(--text-label);
+		white-space: nowrap;
+	}
+
+	.active-filter-summary button {
+		display: inline-flex;
+		height: 28px;
+		flex: none;
+		align-items: center;
+		gap: 5px;
+		padding: 0 8px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-shell);
+		color: var(--color-muted);
+		background: var(--color-control);
+		font-size: var(--text-micro);
+		cursor: pointer;
+	}
+
+	.active-filter-summary button:hover {
+		color: var(--color-text);
+		border-color: var(--color-subtle);
+	}
+
+	.reset-action {
+		height: 34px;
+		flex: none;
+		padding: 0;
+		border: 0;
+		color: var(--color-muted);
+		background: transparent;
+		font-size: var(--text-label);
+		font-weight: 650;
+		cursor: pointer;
+	}
+
+	.reset-action:hover:not(:disabled) {
+		color: var(--color-text);
+	}
+
+	.reset-action:disabled {
+		opacity: 0.45;
+	}
+
+	/* Specimen feed */
+	.specimen-feed {
+		container-type: inline-size;
+		width: 100%;
+		min-width: 0;
+		min-height: 0;
+		flex: 1;
+		overflow-x: hidden;
+		overflow-y: auto;
+		background: var(--color-surface);
+	}
+
+	.catalogue-heading {
+		display: flex;
+		height: 40px;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-lg);
 		padding: 0 24px;
 		border-bottom: 1px solid var(--color-border);
 		color: var(--color-subtle);
 		background: var(--color-panel);
 		font-size: var(--text-micro);
-		font-weight: 650;
-		letter-spacing: 0.035em;
-		text-transform: uppercase;
 	}
 
-	.font-list {
-		min-height: 420px;
+	.catalogue-heading strong {
+		color: var(--color-text);
+		font-size: var(--text-label);
+		font-variant-numeric: tabular-nums;
 	}
 
-	.font-row {
-		position: relative;
-		border-bottom: 1px solid var(--color-border);
+	.specimen-entry {
 		content-visibility: auto;
-		contain-intrinsic-size: auto 68px;
+		contain-intrinsic-size: auto 230px;
+		border-bottom: 1px solid var(--color-border);
+		background: var(--color-surface);
 		transition: background var(--motion-fast);
 	}
 
-	.font-row-select {
+	.specimen-entry.selected {
+		content-visibility: visible;
+		background: color-mix(in srgb, var(--color-selected) 34%, var(--color-surface));
+	}
+
+	.specimen-toggle {
+		display: block;
 		width: 100%;
-		min-height: 68px;
-		padding: 9px 68px 9px 24px;
+		padding: 0;
 		border: 0;
 		color: var(--color-text);
 		background: transparent;
-		font: inherit;
 		text-align: left;
 		cursor: pointer;
 	}
 
-	.font-row:hover,
-	.font-row:focus-within {
-		background: var(--color-hover);
+	.specimen-toggle:hover {
+		background: color-mix(in srgb, var(--color-hover) 46%, transparent);
 	}
 
-	.font-row.selected {
-		background: var(--color-selected);
-	}
-
-	.preview-page-action {
-		position: absolute;
-		top: 50%;
-		right: 20px;
-		display: grid;
-		width: 32px;
-		height: 32px;
-		place-items: center;
-		border: 0;
-		border-radius: var(--radius-md);
-		color: var(--color-muted);
-		background: var(--color-raised);
-		cursor: pointer;
-		opacity: 0;
-		transform: translate(4px, -50%);
-		transition:
-			color var(--motion-fast),
-			background var(--motion-fast),
-			opacity var(--motion-fast),
-			transform var(--motion-fast);
-	}
-
-	.font-row:hover .preview-page-action,
-	.font-row:focus-within .preview-page-action,
-	.font-row.selected .preview-page-action,
-	.preview-page-action.pinned {
-		opacity: 1;
-		transform: translate(0, -50%);
-	}
-
-	.preview-page-action:hover {
-		color: var(--color-text);
-		background: var(--color-control);
-	}
-
-	.preview-page-action.pinned {
-		color: var(--color-text);
-	}
-
-	.preview-page-action.pinned :global(svg) {
-		fill: currentColor;
-	}
-
-	.family-cell,
-	.style-cell {
-		display: grid;
-		min-width: 0;
-		gap: 4px;
-	}
-
-	.family-cell strong {
+	.family-line {
+		display: flex;
+		min-height: 45px;
+		align-items: center;
+		gap: clamp(10px, 1.4vw, 22px);
+		padding: 0 24px;
 		overflow: hidden;
-		font-size: var(--text-body-sm);
+		color: var(--color-subtle);
+		font-size: var(--text-micro);
+	}
+
+	.family-line > strong {
+		flex: 0 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		color: var(--color-text);
+		font-size: var(--text-label);
 		font-weight: 650;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 
-	.family-cell small,
-	.style-cell,
-	.style-cell small {
+	.family-line > span {
+		flex: none;
+		white-space: nowrap;
+	}
+
+	.conflict-label {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		color: var(--color-warning);
+	}
+
+	.open-label {
+		display: inline-flex;
+		align-items: center;
+		margin-left: auto;
+		gap: 6px;
+		color: var(--color-muted);
+		font-weight: 650;
+	}
+
+	.open-label :global(svg) {
+		transition: transform var(--motion-fast);
+	}
+
+	.selected .open-label :global(svg) {
+		transform: rotate(90deg);
+	}
+
+	.specimen-canvas {
+		display: flex;
+		min-height: calc(var(--specimen-size) * 1.42 + 16px);
+		align-items: center;
+		padding: 14px 24px;
+		overflow: hidden;
+	}
+
+	.specimen-text {
+		display: block;
+		max-width: 100%;
+		font-size: var(--specimen-size);
+		font-kerning: normal;
+		font-optical-sizing: auto;
+		line-height: 1.14;
+		letter-spacing: -0.035em;
+		white-space: nowrap;
+	}
+
+	.compact .specimen-canvas {
+		min-height: calc(var(--specimen-size) * 1.15 + 14px);
+		padding-block: 12px;
+	}
+
+	.compact .specimen-text {
+		font-size: calc(var(--specimen-size) * 0.72);
+	}
+
+	/* Loading skeleton */
+	.loading-entry {
+		padding-bottom: 8px;
+	}
+
+	.loading-meta {
+		display: flex;
+		height: 45px;
+		align-items: center;
+		gap: 16px;
+		padding: 0 24px;
+	}
+
+	.loading-meta span {
+		width: 110px;
+		height: 9px;
+		border-radius: var(--radius-xs);
+		background: var(--color-skeleton);
+	}
+
+	.specimen-skeleton {
+		display: flex;
+		width: min(900px, 82%);
+		align-items: center;
+		gap: 10px;
+		margin-left: 24px;
+	}
+
+	.specimen-skeleton span {
+		height: clamp(48px, 6vw, 78px);
+		border-radius: var(--radius-sm);
+		background: var(--color-skeleton);
+		animation: skeleton-pulse 1.25s ease-in-out infinite alternate;
+	}
+
+	.specimen-skeleton span:nth-child(1) {
+		width: 42%;
+	}
+
+	.specimen-skeleton span:nth-child(2) {
+		width: 27%;
+	}
+
+	.specimen-skeleton span:nth-child(3) {
+		width: 18%;
+	}
+
+	/* Inline family detail (replaces the sidebar inspector) */
+	.family-details {
+		padding: 18px 24px 22px;
+		border-top: 1px solid var(--color-border);
+		background: color-mix(in srgb, var(--color-panel) 62%, transparent);
+	}
+
+	.detail-heading {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: var(--space-xl);
+	}
+
+	.detail-heading strong {
+		font-size: var(--text-label);
+	}
+
+	.detail-heading p {
+		margin: 4px 0 0;
 		color: var(--color-muted);
 		font-size: var(--text-micro);
 	}
 
-	.family-cell small {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+	.detail-actions {
+		display: flex;
+		flex: none;
+		gap: var(--space-sm);
 	}
 
-	.preview-cell {
-		overflow: hidden;
-		font-size: 1.25rem;
-		line-height: 1.15;
-		letter-spacing: -0.02em;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.style-cell {
-		justify-items: end;
-		font-variant-numeric: tabular-nums;
-	}
-
-	.style-cell small {
+	.detail-action {
 		display: inline-flex;
+		height: 34px;
 		align-items: center;
-		gap: 4px;
+		gap: 7px;
+		padding: 0 12px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		color: var(--color-text);
+		background: var(--color-control);
+		font-size: var(--text-label);
+		font-weight: 650;
+		white-space: nowrap;
+		cursor: pointer;
+		transition:
+			background var(--motion-fast),
+			border-color var(--motion-fast),
+			color var(--motion-fast);
+	}
+
+	.detail-action:hover {
+		background: var(--color-selected);
+	}
+
+	.detail-action.ghost {
 		color: var(--color-warning);
+		background: transparent;
 	}
 
-	.compact .font-row-select,
-	.compact .skeleton-row {
-		min-height: 52px;
-		padding-top: 6px;
-		padding-bottom: 6px;
+	.detail-action.ghost:hover {
+		background: color-mix(in srgb, var(--color-warning) 10%, transparent);
 	}
 
-	.compact .font-row {
-		contain-intrinsic-size: auto 52px;
+	.detail-action.pinned {
+		border-color: color-mix(in srgb, var(--color-accent) 58%, var(--color-border));
+		background: color-mix(in srgb, var(--color-accent) 8%, var(--color-control));
 	}
 
-	.compact .preview-cell {
-		font-size: 1.05rem;
+	.detail-action.pinned :global(svg) {
+		fill: currentColor;
 	}
 
-	.skeleton-row {
-		min-height: 68px;
-		padding: 9px 24px;
-		cursor: wait;
-	}
-
-	.compact .skeleton-row {
-		min-height: 52px;
-		padding-top: 6px;
-		padding-bottom: 6px;
-	}
-
-	.skeleton {
-		display: block;
-		height: 11px;
-		border-radius: var(--radius-xs);
-		background: var(--color-skeleton);
-		animation: skeleton-pulse 1.3s ease-in-out infinite;
-		animation-delay: calc(var(--skeleton-index) * 55ms);
-	}
-
-	.family-skeleton {
-		width: 68%;
-	}
-
-	.preview-skeleton {
-		width: 84%;
-		height: 18px;
-	}
-
-	.count-skeleton {
-		width: 42px;
-		justify-self: end;
-	}
-
-	.state-view {
+	.face-list {
 		display: grid;
-		max-width: 460px;
+		margin: 14px 0 0;
+		padding: 0;
+		list-style: none;
+		border-top: 1px solid var(--color-border);
+	}
+
+	.face-list li {
+		display: grid;
+		min-height: 56px;
+		grid-template-columns: minmax(130px, 220px) minmax(0, 1fr);
+		align-items: center;
+		gap: 20px;
+		padding: 10px 0;
+		overflow: hidden;
+		border-bottom: 1px solid var(--color-border);
+	}
+
+	.face-meta {
+		display: grid;
+		min-width: 0;
+		gap: 2px;
+	}
+
+	.face-meta strong {
+		font-size: var(--text-body-sm);
+		font-weight: 650;
+	}
+
+	.face-meta small {
+		overflow: hidden;
+		color: var(--color-subtle);
+		font-size: var(--text-micro);
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.face-specimen {
+		font-size: clamp(24px, 3.6vw, 42px);
+		line-height: 1.2;
+		letter-spacing: -0.02em;
+		white-space: nowrap;
+	}
+
+	.more-faces {
+		margin: 12px 0 0;
+		color: var(--color-subtle);
+		font-size: var(--text-micro);
+	}
+
+	.glyph-sample {
+		margin-top: 20px;
+	}
+
+	.glyph-sample h3 {
+		margin: 0 0 10px;
+		font-size: var(--text-label);
+		font-weight: 650;
+	}
+
+	.glyphs {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+		border-top: 1px solid var(--color-border);
+		border-left: 1px solid var(--color-border);
+	}
+
+	.glyphs span {
+		display: grid;
+		aspect-ratio: 1;
 		place-items: center;
-		margin: 64px auto;
-		padding: 28px;
+		border-right: 1px solid var(--color-border);
+		border-bottom: 1px solid var(--color-border);
+		font-size: var(--text-title);
+	}
+
+	/* Empty / error states */
+	.catalogue-state {
+		display: grid;
+		min-height: 360px;
+		place-items: center;
+		align-content: center;
+		gap: var(--space-sm);
+		padding: 32px;
 		text-align: center;
 	}
 
 	.state-icon {
 		display: grid;
-		width: 50px;
-		height: 50px;
+		width: 40px;
+		height: 40px;
 		place-items: center;
-		margin-bottom: 15px;
+		margin-bottom: 4px;
 		border: 1px solid var(--color-border);
-		border-radius: var(--radius-lg);
+		border-radius: var(--radius-md);
 		color: var(--color-muted);
-		background: var(--color-raised);
+		background: var(--color-panel);
 	}
 
 	.state-icon.error {
 		color: var(--color-danger);
 	}
 
-	.state-view h2 {
-		margin: 0;
-		font-size: var(--text-title);
+	.catalogue-state h2 {
+		margin-bottom: 0;
+		font-size: var(--text-heading-sm);
 	}
 
-	.state-view p {
-		max-width: 54ch;
-		margin: 8px 0 0;
+	.catalogue-state p {
+		max-width: 48ch;
+		margin-bottom: var(--space-sm);
 		color: var(--color-muted);
 		font-size: var(--text-body-sm);
-		line-height: 1.55;
 	}
 
-	.state-view button,
-	.load-more-row button {
-		margin-top: 16px;
+	.catalogue-state button {
+		display: inline-flex;
+		min-height: 36px;
+		align-items: center;
+		justify-content: center;
 		padding: 0 12px;
 		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
 		color: var(--color-text);
 		background: var(--color-control);
+		font-size: var(--text-label);
+		font-weight: 650;
+		cursor: pointer;
 	}
 
-	.state-view button:hover,
-	.load-more-row button:hover {
+	.catalogue-state button:hover {
 		background: var(--color-selected);
 	}
 
 	.load-more-row {
-		display: grid;
-		place-items: center;
-		padding: 8px 16px 24px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-md);
+		padding: 18px 24px 26px;
+		color: var(--color-subtle);
+		font-size: var(--text-micro);
+	}
+
+	.load-more-row button {
+		display: inline-flex;
+		min-height: 36px;
+		align-items: center;
+		justify-content: center;
+		padding: 0 12px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		color: var(--color-text);
+		background: var(--color-control);
+		font-size: var(--text-label);
+		font-weight: 650;
+		cursor: pointer;
+	}
+
+	.load-more-row button:hover {
+		background: var(--color-selected);
 	}
 
 	.toast {
@@ -1340,9 +1838,22 @@
 		}
 	}
 
-	@media (max-width: 1119px) {
-		.library-workspace {
-			grid-template-columns: 1fr;
+	/* Container queries — collapse meta as the feed narrows */
+	@container (max-width: 940px) {
+		.meta-format,
+		.meta-spacing {
+			display: none;
+		}
+
+		.specimen-text {
+			font-size: min(var(--specimen-size), 13cqi);
+		}
+	}
+
+	@container (max-width: 680px) {
+		.meta-source,
+		.meta-count {
+			display: none;
 		}
 	}
 
@@ -1355,19 +1866,11 @@
 			height: calc(var(--app-content-height) - 57px);
 			min-height: 0;
 		}
-
-		.library-header {
-			top: 0;
-		}
 	}
 
 	@media (max-width: 700px) {
 		.library-header {
-			padding: 18px 16px 12px;
-		}
-
-		.heading-row {
-			align-items: center;
+			padding: 16px 16px 12px;
 		}
 
 		.primary-action {
@@ -1379,29 +1882,54 @@
 			display: none;
 		}
 
-		.table-head,
-		.font-row-select,
-		.skeleton-row {
-			grid-template-columns: minmax(120px, 0.8fr) minmax(170px, 1.2fr);
-			padding-left: 16px;
+		.primary-toolbar,
+		.specimen-toolbar {
+			padding-inline: 16px;
 		}
 
-		.table-head,
-		.skeleton-row {
-			padding-right: 16px;
+		.primary-toolbar {
+			grid-template-columns: 1fr;
 		}
 
-		.font-row-select {
-			padding-right: 56px;
+		.filter-strip {
+			justify-content: flex-start;
+			overflow-x: auto;
 		}
 
-		.preview-page-action {
-			right: 12px;
+		.filter-strip :global(.filter-control) {
+			min-width: 132px;
+			flex: 0 0 auto;
 		}
 
-		.table-head span:last-child,
-		.style-cell {
+		.specimen-toolbar {
+			flex-wrap: wrap;
+		}
+
+		.preview-text-control {
+			width: auto;
+			flex: 1 1 240px;
+		}
+
+		.active-filter-summary {
 			display: none;
+		}
+
+		.catalogue-heading,
+		.family-line,
+		.specimen-canvas,
+		.family-details {
+			padding-inline: 16px;
+		}
+
+		.detail-heading {
+			align-items: stretch;
+			flex-direction: column;
+			gap: var(--space-md);
+		}
+
+		.face-list li {
+			grid-template-columns: 1fr;
+			gap: 6px;
 		}
 
 		.toast {
@@ -1416,34 +1944,78 @@
 			max-width: 32ch;
 		}
 
-		.toolbar {
-			align-items: stretch;
+		.size-control {
+			grid-template-columns: auto minmax(80px, 1fr) 44px;
+			width: 100%;
 		}
 
-		.filter-menu summary {
-			width: 40px;
-			padding: 0;
-			font-size: 0;
-		}
-
-		.filter-panel {
-			position: fixed;
-			top: auto;
-			right: 12px;
-			bottom: 12px;
-			left: 12px;
-			width: auto;
-		}
-
-		.table-head,
-		.font-row-select,
-		.skeleton-row {
-			grid-template-columns: 1fr;
-		}
-
-		.table-head span:nth-child(2),
-		.preview-cell {
+		.catalogue-heading > span {
 			display: none;
 		}
 	}
+
+  .library-header {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2xl);
+  padding: 18px 24px 14px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  }
+
+  .header-lead {
+  min-width: 0;
+  }
+
+  .library-header h1 {
+  margin: 0;
+  font-size: var(--text-heading);
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+  }
+
+  .catalogue-summary {
+  margin: 5px 0 0;
+  color: var(--color-muted);
+  font-size: var(--text-micro);
+  font-variant-numeric: tabular-nums;
+  }
+
+  .header-actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-sm);
+  }
+
+  .primary-action {
+  display: inline-flex;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  color: var(--color-accent-ink);
+  background: var(--color-accent);
+  font-size: var(--text-label);
+  font-weight: 650;
+  cursor: pointer;
+  transition:
+  background var(--motion-fast),
+  transform var(--motion-fast);
+  }
+
+  .primary-action:hover {
+  background: var(--color-accent-hover);
+  }
+
+  .primary-action:active {
+  transform: translateY(1px);
+  }
 </style>

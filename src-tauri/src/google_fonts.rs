@@ -110,6 +110,10 @@ struct GoogleFontArtifact {
 struct GoogleFontPageRequest {
     query: String,
     category: String,
+    subset: String,
+    technology: String,
+    availability: String,
+    sort: String,
     offset: usize,
     limit: usize,
 }
@@ -134,16 +138,23 @@ pub fn list_fonts(
     app_data_dir: &Path,
 ) -> Result<GoogleFontPageDto, GoogleFontsError> {
     let manifest = bundled_manifest()?;
+    if !catalogue_request_is_valid(request) {
+        return Err(GoogleFontsError::InvalidRequest);
+    }
     let installed_family_ids = installation_repository(app_data_dir)
         .installed_family_ids(PROVIDER_ID)
         .map_err(|_| GoogleFontsError::Database)?;
     let internal_request = GoogleFontPageRequest {
         query: request.query.clone(),
         category: request.category.clone(),
+        subset: request.subset.clone(),
+        technology: request.technology.clone(),
+        availability: request.availability.clone(),
+        sort: request.sort.clone(),
         offset: usize::try_from(request.offset).unwrap_or(usize::MAX),
         limit: usize::try_from(request.limit).unwrap_or(usize::MAX),
     };
-    let page = catalogue_page(manifest, &internal_request);
+    let page = catalogue_page(manifest, &internal_request, &installed_family_ids);
     let families = page
         .family_ids
         .iter()
@@ -351,6 +362,8 @@ fn family_summary(family: &GoogleFontFamily, installed: bool) -> GoogleFontFamil
         license: family.license.clone(),
         artifact_count: u32::try_from(family.artifacts.len()).unwrap_or(u32::MAX),
         preview_artifact_id: family.preview_artifact_id.clone(),
+        variable: family_is_variable(family),
+        last_modified: family.last_modified.clone(),
         installed,
     }
 }
@@ -658,6 +671,7 @@ fn parse_manifest(json: &str) -> Result<GoogleFontsManifest, String> {
 fn catalogue_page(
     manifest: &GoogleFontsManifest,
     request: &GoogleFontPageRequest,
+    installed_family_ids: &HashSet<String>,
 ) -> GoogleFontPage {
     let query_terms = request
         .query
@@ -665,7 +679,10 @@ fn catalogue_page(
         .map(str::to_lowercase)
         .collect::<Vec<_>>();
     let category = request.category.trim().to_lowercase();
-    let filtered = manifest
+    let subset = request.subset.trim().to_lowercase();
+    let technology = request.technology.trim().to_lowercase();
+    let availability = request.availability.trim().to_lowercase();
+    let mut filtered = manifest
         .families
         .iter()
         .filter(|family| {
@@ -680,9 +697,51 @@ fn catalogue_page(
             let category_matches = category.is_empty()
                 || category == "all"
                 || family.category.eq_ignore_ascii_case(&category);
-            category_matches && query_terms.iter().all(|term| searchable.contains(term))
+            let subset_matches = subset.is_empty()
+                || subset == "all"
+                || family
+                    .subsets
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(&subset));
+            let variable = family_is_variable(family);
+            let technology_matches = match technology.as_str() {
+                "variable" => variable,
+                "static" => !variable,
+                _ => true,
+            };
+            let installed = installed_family_ids.contains(&family.id);
+            let availability_matches = match availability.as_str() {
+                "managed" => installed,
+                "available" => !installed,
+                _ => true,
+            };
+            category_matches
+                && subset_matches
+                && technology_matches
+                && availability_matches
+                && query_terms.iter().all(|term| searchable.contains(term))
         })
         .collect::<Vec<_>>();
+    match request.sort.trim().to_lowercase().as_str() {
+        "name-desc" => {
+            filtered.sort_by_cached_key(|family| family.family.to_lowercase());
+            filtered.reverse();
+        }
+        "recent" => filtered.sort_by(|left, right| {
+            right
+                .last_modified
+                .cmp(&left.last_modified)
+                .then_with(|| left.family.cmp(&right.family))
+        }),
+        "styles" => filtered.sort_by(|left, right| {
+            right
+                .artifacts
+                .len()
+                .cmp(&left.artifacts.len())
+                .then_with(|| left.family.cmp(&right.family))
+        }),
+        _ => filtered.sort_by_cached_key(|family| family.family.to_lowercase()),
+    }
     let total = filtered.len();
     let limit = if request.limit == 0 {
         60
@@ -703,6 +762,38 @@ fn catalogue_page(
         offset,
         limit,
     }
+}
+
+fn family_is_variable(family: &GoogleFontFamily) -> bool {
+    family
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.style.starts_with("Variable"))
+}
+
+fn catalogue_request_is_valid(request: &GoogleFontPageRequestDto) -> bool {
+    request.query.chars().count() <= 120
+        && filter_token_is_valid(&request.category)
+        && filter_token_is_valid(&request.subset)
+        && matches!(
+            request.technology.trim().to_ascii_lowercase().as_str(),
+            "" | "all" | "variable" | "static"
+        )
+        && matches!(
+            request.availability.trim().to_ascii_lowercase().as_str(),
+            "" | "all" | "managed" | "available"
+        )
+        && matches!(
+            request.sort.trim().to_ascii_lowercase().as_str(),
+            "" | "name-asc" | "name-desc" | "recent" | "styles"
+        )
+}
+
+fn filter_token_is_valid(value: &str) -> bool {
+    value.len() <= 48
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 fn selected_artifacts(
@@ -777,6 +868,8 @@ fn is_trusted_repository_url(value: &str, source_commit: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::{
         GoogleFontPageRequest, catalogue_page, git_blob_sha, parse_manifest, selected_artifacts,
     };
@@ -852,19 +945,48 @@ mod tests {
     #[test]
     fn catalogue_search_is_bounded_and_category_aware() {
         let manifest = parse_manifest(MANIFEST).expect("a trusted manifest");
+        let installed_family_ids = HashSet::new();
         let page = catalogue_page(
             &manifest,
             &GoogleFontPageRequest {
                 query: "source".to_owned(),
                 category: "serif".to_owned(),
+                subset: "all".to_owned(),
+                technology: "all".to_owned(),
+                availability: "all".to_owned(),
+                sort: "name-asc".to_owned(),
                 offset: 0,
                 limit: 500,
             },
+            &installed_family_ids,
         );
 
         assert_eq!(page.family_ids, vec!["gf:source-serif-4"]);
         assert_eq!(page.total, 1);
         assert_eq!(page.limit, 100);
+    }
+
+    #[test]
+    fn catalogue_filters_before_pagination_and_sorts_the_result() {
+        let manifest = parse_manifest(MANIFEST).expect("a trusted manifest");
+        let installed_family_ids = HashSet::from(["gf:inter".to_owned()]);
+        let page = catalogue_page(
+            &manifest,
+            &GoogleFontPageRequest {
+                query: String::new(),
+                category: "all".to_owned(),
+                subset: "latin".to_owned(),
+                technology: "variable".to_owned(),
+                availability: "managed".to_owned(),
+                sort: "name-desc".to_owned(),
+                offset: 0,
+                limit: 60,
+            },
+            &installed_family_ids,
+        );
+
+        assert_eq!(page.family_ids, vec!["gf:inter"]);
+        assert_eq!(page.total, 1);
     }
 
     #[test]

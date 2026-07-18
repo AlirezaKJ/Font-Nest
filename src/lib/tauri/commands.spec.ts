@@ -66,12 +66,20 @@ describe('Google Fonts commands', () => {
 			snapshot: 'fixture'
 		};
 		vi.mocked(invoke).mockResolvedValue(response);
+		const request = {
+			query: 'serif',
+			category: 'serif',
+			subset: 'latin',
+			technology: 'variable',
+			availability: 'available',
+			sort: 'recent',
+			offset: 0,
+			limit: 60
+		};
 
-		await expect(
-			listGoogleFonts({ query: 'serif', category: 'serif', offset: 0, limit: 60 })
-		).resolves.toEqual(response);
+		await expect(listGoogleFonts(request)).resolves.toEqual(response);
 		expect(invoke).toHaveBeenCalledWith('list_google_fonts', {
-			request: { query: 'serif', category: 'serif', offset: 0, limit: 60 }
+			request
 		});
 	});
 

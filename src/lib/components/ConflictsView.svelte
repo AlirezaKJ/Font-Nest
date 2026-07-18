@@ -13,17 +13,14 @@
 
 <section class="conflicts-view" aria-labelledby="conflicts-title">
 	<header class="view-heading">
-		<div>
-			<p class="section-label">Inspect</p>
-			<h1 id="conflicts-title">Potential conflicts</h1>
-			<p>
-				Families are flagged when the same weight and style appear in more than one font
-				file. Nothing is changed automatically.
-			</p>
-		</div>
-		<span class="count-chip"
-			>{families.length} {families.length === 1 ? 'family' : 'families'}</span
-		>
+	<div>
+	<h1 id="conflicts-title">Potential conflicts</h1>
+	<p>
+	Families are flagged when the same weight and style appear in more than one font
+	file. Nothing is changed automatically.
+	</p>
+	</div>
+	<span class="count-chip">{families.length} {families.length === 1 ? 'family' : 'families'}</span>
 	</header>
 
 	{#if families.length}
@@ -287,4 +284,42 @@
 			display: none;
 		}
 	}
+
+  .view-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 24px 28px 20px;
+  border-bottom: 1px solid var(--color-border);
+  }
+
+  h1 {
+  margin: 0;
+  font-size: var(--text-heading);
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+  }
+
+  .view-heading p:last-child {
+  max-width: 66ch;
+  margin: 7px 0 0;
+  color: var(--color-muted);
+  font-size: var(--text-body-sm);
+  line-height: 1.5;
+  }
+
+  .count-chip {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-shell);
+  color: var(--color-warning);
+  background: var(--color-panel);
+  font-size: var(--text-label);
+  font-weight: 600;
+  white-space: nowrap;
+  }
 </style>
