@@ -675,9 +675,11 @@
 	{loading}
 	{theme}
 	settingsActive={view === 'settings'}
+	{sidebarCollapsed}
 	onSearch={updateGlobalSearch}
 	onNavigate={navigate}
 	onToggleTheme={toggleTheme}
+	onToggleSidebar={toggleSidebar}
 	onRefresh={() => void refreshCatalogue()}
 	onPreview={openPreviewFilePicker}
 />

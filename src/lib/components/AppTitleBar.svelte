@@ -14,9 +14,11 @@
 		loading,
 		theme,
 		settingsActive,
+		sidebarCollapsed,
 		onSearch,
 		onNavigate,
 		onToggleTheme,
+		onToggleSidebar,
 		onRefresh,
 		onPreview
 	}: {
@@ -24,9 +26,11 @@
 		loading: boolean;
 		theme: 'system' | 'light' | 'dark';
 		settingsActive: boolean;
+		sidebarCollapsed: boolean;
 		onSearch: (value: string) => void;
 		onNavigate: (view: AppView) => void;
 		onToggleTheme: () => void;
+		onToggleSidebar: () => void;
 		onRefresh: () => void;
 		onPreview: () => void;
 	} = $props();
@@ -119,6 +123,12 @@
 					<Icon name="settings" size={16} /> Settings
 				</button>
 				<div class="menu-divider"></div>
+				<p>View</p>
+				<button type="button" onclick={() => runMenuAction(onToggleSidebar)}>
+					<Icon name="sidebar" size={16} />
+					{sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+				</button>
+				<div class="menu-divider"></div>
 				<p>Font tools</p>
 				<button type="button" onclick={() => runMenuAction(onPreview)}>
 					<Icon name="upload" size={16} /> Preview a font
@@ -134,6 +144,19 @@
 			<img src={logoDataUrl} alt="" data-tauri-drag-region />
 			<span data-tauri-drag-region>FontNest</span>
 		</div>
+
+		<button
+			type="button"
+			class:scanning={loading}
+			class="titlebar-tool catalogue-tool"
+			disabled={loading}
+			onclick={onRefresh}
+			aria-label={loading ? 'Scanning installed fonts' : 'Scan fonts again'}
+			title={loading ? 'Scanning installed fonts' : 'Scan fonts again'}
+		>
+			<span class="catalogue-dot"></span>
+			<span>{loading ? 'Scanning' : 'Catalogue ready'}</span>
+		</button>
 	</div>
 
 	<label class="titlebar-search">
@@ -157,18 +180,6 @@
 	</label>
 
 	<div class="titlebar-actions" data-tauri-drag-region>
-		<button
-			type="button"
-			class:scanning={loading}
-			class="titlebar-tool catalogue-tool"
-			disabled={loading}
-			onclick={onRefresh}
-			aria-label={loading ? 'Scanning installed fonts' : 'Scan fonts again'}
-			title={loading ? 'Scanning installed fonts' : 'Scan fonts again'}
-		>
-			<span class="catalogue-dot"></span>
-			<span>{loading ? 'Scanning' : 'Catalogue ready'}</span>
-		</button>
 		<button
 			type="button"
 			class="titlebar-tool"
@@ -229,7 +240,7 @@
 		z-index: var(--z-titlebar);
 		display: grid;
 		height: var(--titlebar-height, 48px);
-		grid-template-columns: minmax(160px, 1fr) minmax(320px, 520px) minmax(218px, 1fr);
+		grid-template-columns: minmax(280px, 1fr) minmax(320px, 520px) minmax(160px, 1fr);
 		align-items: center;
 		border-bottom: 1px solid #252620;
 		color: #f1f0ea;

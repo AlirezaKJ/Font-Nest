@@ -10,6 +10,8 @@ a bundled copy when you are offline.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-19
+
 ### Added
 
 - A What's New screen that lists the changes in each version and marks the one you are running.
@@ -23,6 +25,12 @@ a bundled copy when you are offline.
 - Changed the default preview text to "What is life but a fevered dream".
 - The Fetch fonts view now uses the same preview text as the rest of the app, so what you type in
   one place shows up everywhere instead of keeping its own separate copy.
+- Moved the "Catalogue ready" status chip to the left of the title bar, next to the app name. It
+  no longer crowds the search field on the busy right side.
+- Dropped the "Workspace" and "Saved previews" headings in the sidebar and put a thin divider line
+  between the two groups instead. Frees up vertical space so more of your saved previews fit.
+- Added a Collapse sidebar / Expand sidebar option to the menu in the top bar, so you can toggle the
+  sidebar without reaching for its edge.
 
 ### Fixed
 
@@ -67,6 +75,7 @@ on your computer.
   it has verified the signature.
 - Apache-2.0 license.
 
-[Unreleased]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/AlirezaKJ/Font-Nest/releases/tag/v0.1.0

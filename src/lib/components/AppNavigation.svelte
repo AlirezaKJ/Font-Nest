@@ -293,7 +293,6 @@
 	<div bind:this={navContentElement} class="navigation-content">
 		<span class="sidebar-indicator" style={indicatorStyle} aria-hidden="true"></span>
 		<nav aria-label="Primary">
-			<p class="nav-group-label">Workspace</p>
 			<button
 				use:registerItem={'nav:library'}
 				type="button"
@@ -342,7 +341,7 @@
 
 		{#if pinnedFamilies.length}
 			<nav class="preview-navigation" aria-label="Saved font previews. Drag to reorder.">
-				<p class="nav-group-label">Saved previews</p>
+				<div class="nav-divider" aria-hidden="true"></div>
 				{#each pinnedFamilies as family (family.id)}
 					<div
 						class:active={view === 'preview' && activeFamilyId === family.id}
@@ -562,13 +561,10 @@
 		gap: 0;
 	}
 
-	.nav-group-label {
-		margin: 0 9px 6px;
-		color: var(--color-subtle);
-		font-size: var(--text-micro);
-		font-weight: 650;
-		letter-spacing: 0.045em;
-		text-transform: uppercase;
+	.nav-divider {
+		height: 1px;
+		margin: 4px 9px 8px;
+		background: var(--color-border);
 	}
 
 	nav button {
@@ -826,9 +822,12 @@
 
 		.collapsed .nav-label,
 		.collapsed .nav-count,
-		.collapsed .nav-group-label,
 		.collapsed .action-label {
 			display: none;
+		}
+
+		.collapsed .nav-divider {
+			margin-inline: 4px;
 		}
 
 		.collapsed .catalogue-status {
@@ -865,7 +864,7 @@
 			padding: 8px 12px;
 		}
 
-		.nav-group-label,
+		.nav-divider,
 		.catalogue-status {
 			display: none;
 		}

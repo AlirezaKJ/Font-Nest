@@ -18,6 +18,7 @@
 		| 'restore'
 		| 'search'
 		| 'settings'
+		| 'sidebar'
 		| 'sparkle'
 		| 'sun'
 		| 'upload';
@@ -97,6 +98,9 @@
 		<rect x="5.5" y="8.5" width="10" height="10" rx="0.5" />
 	{:else if name === 'font'}
 		<path d="M5 18.5 10.6 5.5h2.8L19 18.5M7.4 13h9.2" />
+	{:else if name === 'sidebar'}
+		<rect x="4" y="5" width="16" height="14" rx="2" />
+		<path d="M9.5 5v14" />
 	{:else if name === 'sparkle'}
 		<path
 			d="M12 4.5c.35 3.4 2.1 5.15 5.5 5.5-3.4.35-5.15 2.1-5.5 5.5-.35-3.4-2.1-5.15-5.5-5.5 3.4-.35 5.15-2.1 5.5-5.5Z"
