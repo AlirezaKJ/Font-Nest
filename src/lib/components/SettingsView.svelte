@@ -16,17 +16,21 @@
 	let {
 		theme,
 		density,
+		focusOutlines,
 		previewText,
 		onTheme,
 		onDensity,
+		onFocusOutlines,
 		onPreviewText,
 		onViewReleaseNotes
 	}: {
 		theme: ThemePreference;
 		density: DensityPreference;
+		focusOutlines: boolean;
 		previewText: string;
 		onTheme: (value: ThemePreference) => void;
 		onDensity: (value: DensityPreference) => void;
+		onFocusOutlines: (value: boolean) => void;
 		onPreviewText: (value: string) => void;
 		onViewReleaseNotes: () => void;
 	} = $props();
@@ -124,6 +128,34 @@
 					onclick={() => onDensity('compact')}
 				>
 					Compact
+				</button>
+			</div>
+		</section>
+
+		<section class="setting-row" aria-labelledby="accessibility-title">
+			<div>
+				<h2 id="accessibility-title">Focus outlines</h2>
+				<p>
+					Draw a visible outline around whatever has keyboard focus. Off by default. Turn
+					it on if you navigate with the keyboard or want a clearer focus indicator.
+				</p>
+			</div>
+			<div class="segmented-control two-up" aria-label="Focus outlines">
+				<button
+					type="button"
+					class:active={!focusOutlines}
+					aria-pressed={!focusOutlines}
+					onclick={() => onFocusOutlines(false)}
+				>
+					Off
+				</button>
+				<button
+					type="button"
+					class:active={focusOutlines}
+					aria-pressed={focusOutlines}
+					onclick={() => onFocusOutlines(true)}
+				>
+					On
 				</button>
 			</div>
 		</section>

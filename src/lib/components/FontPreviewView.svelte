@@ -1612,7 +1612,9 @@
 	}
 
 	.specimen:focus-visible {
-		outline: none;
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 6px;
+		border-radius: var(--radius-sm);
 	}
 
 	.edit-hint {
@@ -1783,7 +1785,7 @@
 	.glyph-accordion-trigger:focus-visible {
 		position: relative;
 		z-index: 1;
-		outline: 2px solid var(--color-focus);
+		outline: 2px solid var(--focus-ring);
 		outline-offset: -3px;
 	}
 
@@ -1872,7 +1874,7 @@
 
 	.glyphs button:focus-visible {
 		z-index: 1;
-		outline: 2px solid var(--color-focus);
+		outline: 2px solid var(--focus-ring);
 		outline-offset: -3px;
 	}
 
@@ -1882,7 +1884,7 @@
 	}
 
 	.glyphs button.locked {
-		box-shadow: inset 0 0 0 2px var(--color-focus);
+		box-shadow: inset 0 0 0 2px var(--focus-ring);
 	}
 
 	.glyphs button.locked::after {
@@ -1943,7 +1945,7 @@
 	}
 
 	.glyph-batch-actions button:focus-visible {
-		outline: 2px solid var(--color-focus);
+		outline: 2px solid var(--focus-ring);
 		outline-offset: 2px;
 	}
 
@@ -2042,7 +2044,7 @@
 
 	.glyph-set-switcher button:focus-visible,
 	.glyph-view-switcher button:focus-visible {
-		outline: 2px solid var(--color-focus);
+		outline: 2px solid var(--focus-ring);
 		outline-offset: 2px;
 	}
 
@@ -2274,7 +2276,7 @@
 	}
 
 	.face-control select:focus-visible {
-		outline: 2px solid var(--color-focus);
+		outline: 2px solid var(--focus-ring);
 		outline-offset: 2px;
 	}
 
@@ -2548,7 +2550,7 @@
 	}
 
 	.parser-section summary:focus-visible {
-		outline: 2px solid var(--color-focus);
+		outline: 2px solid var(--focus-ring);
 		outline-offset: 3px;
 	}
 
@@ -2641,7 +2643,7 @@
 	}
 
 	.parser-json:focus-visible {
-		outline: 2px solid var(--color-focus);
+		outline: 2px solid var(--focus-ring);
 		outline-offset: 2px;
 	}
 

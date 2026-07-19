@@ -4,11 +4,13 @@
 
 	import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
 	import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
+	import type { ValidatedLocalFont } from '$lib/bindings/ValidatedLocalFont';
 	import { checkForUpdates } from '$lib/app-updater';
 	import { getConflictDestination } from '$lib/conflict-navigation';
 	import AppNavigation, { type AppView } from '$lib/components/AppNavigation.svelte';
 	import AppTitleBar from '$lib/components/AppTitleBar.svelte';
 	import ConflictsView from '$lib/components/ConflictsView.svelte';
+	import LocalFontPreview from '$lib/components/LocalFontPreview.svelte';
 	import DiscoverFilterMenu, {
 		type DiscoverFilterOption
 	} from '$lib/components/DiscoverFilterMenu.svelte';
@@ -21,6 +23,7 @@
 		type ThemePreference
 	} from '$lib/components/SettingsView.svelte';
 	import { createBrowserCatalogue } from '$lib/catalogue/browser-catalogue';
+	import { importLocalFontPreview } from '$lib/fonts/local-fonts';
 	import { hasUnseenRelease } from '$lib/release-notes/loader';
 	import { reorderIds, type ReorderPosition } from '$lib/reorder';
 	import { isStickySurfaceElevated } from '$lib/sticky-surface';
@@ -106,10 +109,11 @@
 	let previewWeight = $state(400);
 	let theme = $state<ThemePreference>('dark');
 	let density = $state<DensityPreference>('comfortable');
+	let focusOutlines = $state(false);
 	let sidebarCollapsed = $state(false);
 	let pinnedFamilyIds = $state<string[]>([]);
 	let toast = $state<Toast | null>(null);
-	let previewFileInput = $state<HTMLInputElement>();
+	let localPreview = $state<ValidatedLocalFont | null>(null);
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
 	let updateCheckTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -211,6 +215,7 @@
 	onMount(() => {
 		loadPreferences();
 		applyTheme();
+		applyFocusOutlines();
 		revealWindow();
 
 		const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
@@ -268,6 +273,7 @@
 			const saved = JSON.parse(localStorage.getItem(PREFERENCES_KEY) ?? '{}') as {
 				theme?: ThemePreference;
 				density?: DensityPreference;
+				focusOutlines?: boolean;
 				previewText?: string;
 				sidebarCollapsed?: boolean;
 				pinnedFamilyIds?: unknown;
@@ -277,6 +283,7 @@
 			if (saved.density && ['comfortable', 'compact'].includes(saved.density)) {
 				density = saved.density;
 			}
+			if (typeof saved.focusOutlines === 'boolean') focusOutlines = saved.focusOutlines;
 			if (saved.previewText?.trim()) previewText = saved.previewText;
 			if (typeof saved.sidebarCollapsed === 'boolean') {
 				sidebarCollapsed = saved.sidebarCollapsed;
@@ -298,8 +305,27 @@
 	function savePreferences() {
 		localStorage.setItem(
 			PREFERENCES_KEY,
-			JSON.stringify({ theme, density, previewText, sidebarCollapsed, pinnedFamilyIds })
+			JSON.stringify({
+				theme,
+				density,
+				focusOutlines,
+				previewText,
+				sidebarCollapsed,
+				pinnedFamilyIds
+			})
 		);
+	}
+
+	// Focus outlines are opt-in. The attribute flips the --focus-ring tokens so every
+	// focus ring in the app shows or hides together.
+	function applyFocusOutlines() {
+		document.documentElement.dataset.focusOutlines = focusOutlines ? 'on' : 'off';
+	}
+
+	function setFocusOutlines(value: boolean) {
+		focusOutlines = value;
+		applyFocusOutlines();
+		savePreferences();
 	}
 
 	function applyTheme() {
@@ -560,85 +586,15 @@
 		return specimenMode === 'names' ? family.name : previewText.trim() || family.name;
 	}
 
-	function openPreviewFilePicker() {
-		previewFileInput?.click();
-	}
-
-	async function previewFontFile(event: Event) {
-		const input = event.currentTarget as HTMLInputElement;
-		const file = input.files?.[0];
-		if (!file) return;
-
+	// Local font files reach the web view only after the Rust boundary validates them.
+	// The picker returns a trusted path; validate_font_file parses every face and hands
+	// back an opaque handle plus a synthetic family, which the preview modal renders.
+	async function openPreviewFilePicker() {
 		try {
-			if (file.size > 30 * 1024 * 1024) {
-				throw new Error('Choose a font file smaller than 30 MB for preview.');
-			}
-
-			const extension = file.name.split('.').pop()?.toLocaleLowerCase() ?? '';
-			const format =
-				extension === 'otf'
-					? 'OpenType'
-					: extension === 'ttf'
-						? 'TrueType'
-						: extension === 'woff2'
-							? 'WOFF2 preview'
-							: 'WOFF preview';
-			const displayName =
-				file.name
-					.replace(/\.(otf|ttf|woff2?)$/i, '')
-					.replace(/[-_]+/g, ' ')
-					.replace(/["\\;\n\r]/g, '')
-					.trim() || 'Preview font';
-			const runtimeFamily = `FontNestPreview${Date.now()}`;
-			const font = new FontFace(displayName, await file.arrayBuffer());
-			await font.load();
-			document.fonts.add(font);
-
-			const id = `preview:${runtimeFamily.toLocaleLowerCase()}`;
-			const family: FontFamilySummary = {
-				id,
-				name: displayName,
-				faceCount: 1,
-				fileCount: 1,
-				styles: ['Preview'],
-				weights: [400],
-				formats: [format],
-				sources: ['Preview only'],
-				monospaced: false,
-				hasConflict: false,
-				faces: [
-					{
-						id: `${id}:0`,
-						postScriptName: displayName.replaceAll(' ', ''),
-						styleName: 'Preview',
-						style: 'normal',
-						weight: 400,
-						format,
-						source: 'Preview only',
-						fileName: file.name,
-						faceIndex: 0,
-						monospaced: false
-					}
-				]
-			};
-
-			if (!catalogue) catalogue = createBrowserCatalogue();
-			catalogue = {
-				...catalogue,
-				families: [family, ...catalogue.families],
-				familyCount: catalogue.familyCount + 1,
-				faceCount: catalogue.faceCount + 1
-			};
-			selectedFamilyId = family.id;
-			view = 'library';
-			showToast(`${file.name} is ready to preview. It was not installed.`, 'success');
+			const validated = await importLocalFontPreview();
+			if (validated) localPreview = validated;
 		} catch (error) {
-			showToast(
-				error instanceof Error ? error.message : 'FontNest could not preview that file.',
-				'error'
-			);
-		} finally {
-			input.value = '';
+			showToast(commandErrorMessage(error), 'error');
 		}
 	}
 
@@ -660,15 +616,6 @@
 </svelte:head>
 
 <a class="skip-link" href="#main-content">Skip to font catalogue</a>
-<input
-	bind:this={previewFileInput}
-	class="visually-hidden-file"
-	type="file"
-	accept=".otf,.ttf,.woff,.woff2,font/otf,font/ttf,font/woff,font/woff2"
-	aria-hidden="true"
-	tabindex="-1"
-	onchange={previewFontFile}
-/>
 
 <AppTitleBar
 	{search}
@@ -1112,9 +1059,11 @@
 			<SettingsView
 				{theme}
 				{density}
+				{focusOutlines}
 				{previewText}
 				onTheme={setTheme}
 				onDensity={setDensity}
+				onFocusOutlines={setFocusOutlines}
 				onPreviewText={setPreviewText}
 				onViewReleaseNotes={() => navigate('whatsNew')}
 			/>
@@ -1130,6 +1079,10 @@
 			<Icon name="close" size={16} />
 		</button>
 	</div>
+{/if}
+
+{#if localPreview}
+	<LocalFontPreview font={localPreview} {previewText} onClose={() => (localPreview = null)} />
 {/if}
 
 <style>
@@ -1287,7 +1240,13 @@
 
 	.search-control:focus-within,
 	.preview-text-control:focus-within {
-		border-color: var(--color-focus);
+		border-color: var(--focus-ring-border);
+	}
+
+	.search-control:has(input:focus-visible),
+	.preview-text-control:has(input:focus-visible) {
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
 	}
 
 	.search-control input,
@@ -1909,14 +1868,6 @@
 	.toast button:hover {
 		color: var(--color-text);
 		background: var(--color-selected);
-	}
-
-	.visually-hidden-file {
-		position: fixed;
-		width: 1px;
-		height: 1px;
-		opacity: 0;
-		pointer-events: none;
 	}
 
 	@keyframes skeleton-pulse {

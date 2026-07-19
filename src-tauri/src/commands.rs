@@ -8,10 +8,11 @@ use crate::dto::{
     AppUpdateEvent, AppUpdateInfo, CommandError, FontCatalogue, FontFaceInspection,
     FontGlyphOutline, FontGlyphOutlineRequest, FontParserJsonExport, GoogleFontFamilyDetails,
     GoogleFontInstallResult, GoogleFontPage, GoogleFontPageRequest, GoogleFontPreview, Greeting,
-    InstallGoogleFontRequest,
+    InstallGoogleFontRequest, ValidatedLocalFont,
 };
 use crate::font_inspection::FontInspectionError;
 use crate::google_fonts::{self, GoogleFontsError};
+use crate::local_fonts::{self, LocalFontError};
 use crate::release_notes::{self, ReleaseNotesError};
 
 const MAX_NAME_LENGTH: usize = 64;
@@ -144,6 +145,33 @@ pub async fn inspect_font_glyph_outline(
     })
     .await
     .map_err(|_| CommandError::font_parser_unavailable())?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn validate_font_file(
+    path: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<ValidatedLocalFont, CommandError> {
+    ensure_trusted_window(&window)?;
+
+    let file_name = std::path::Path::new(&path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("font")
+        .to_owned();
+    // Clone an owned handle to the shared registry so the read + parse can run on a
+    // blocking worker without borrowing app state across the await.
+    let store = (*app.state::<local_fonts::PreviewStore>()).clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = read_capped_font(&path)?;
+        local_fonts::validate_and_register(&store, bytes, &file_name)
+            .map_err(|error| map_local_font_error(&error))
+    })
+    .await
+    .map_err(|_| CommandError::local_font_unreadable())?
 }
 
 #[tauri::command]
@@ -322,7 +350,13 @@ fn ensure_trusted_window(window: &tauri::WebviewWindow) -> Result<(), CommandErr
     }
 }
 
-fn is_trusted_app_origin(url: &tauri::Url) -> bool {
+/// True when an `Origin` header names the app's own web view. The internal preview
+/// protocol grants cross-origin read access to that origin and nothing else.
+pub(crate) fn is_trusted_origin_header(value: &str) -> bool {
+    tauri::Url::parse(value).is_ok_and(|url| is_trusted_app_origin(&url))
+}
+
+pub(crate) fn is_trusted_app_origin(url: &tauri::Url) -> bool {
     let scheme = url.scheme();
     let host = url.host_str().unwrap_or_default();
     if scheme == "tauri" && host == "localhost" {
@@ -375,6 +409,27 @@ fn map_catalogue_inspection_error(error: &CatalogueInspectionError) -> CommandEr
     }
 }
 
+fn read_capped_font(path: &str) -> Result<Vec<u8>, CommandError> {
+    let metadata = std::fs::metadata(path).map_err(|_| CommandError::local_font_unreadable())?;
+    if !metadata.is_file() {
+        return Err(CommandError::local_font_unreadable());
+    }
+    if metadata.len() > local_fonts::MAX_LOCAL_FONT_BYTES {
+        return Err(CommandError::local_font_too_large());
+    }
+    std::fs::read(path).map_err(|_| CommandError::local_font_unreadable())
+}
+
+fn map_local_font_error(error: &LocalFontError) -> CommandError {
+    log::error!("Local font validation failed: {error}");
+    match error {
+        LocalFontError::TooLarge => CommandError::local_font_too_large(),
+        LocalFontError::InvalidFont
+        | LocalFontError::InvalidMetadata
+        | LocalFontError::TooManyFaces => CommandError::local_font_invalid(),
+    }
+}
+
 fn map_release_notes_error(error: &ReleaseNotesError) -> CommandError {
     log::error!("Release notes fetch failed: {error}");
     CommandError::release_notes_unavailable()
@@ -401,8 +456,8 @@ mod tests {
     use crate::dto::{FontGlyphOutlineRequest, FontGlyphVariationValue};
 
     use super::{
-        greet, is_trusted_app_origin, update_version_matches, validate_face_id,
-        validate_glyph_outline_request,
+        greet, is_trusted_app_origin, is_trusted_origin_header, update_version_matches,
+        validate_face_id, validate_glyph_outline_request,
     };
 
     #[test]
@@ -434,6 +489,14 @@ mod tests {
         assert!(!is_trusted_app_origin(
             &tauri::Url::parse("https://fonts.google.com/").expect("the remote URL")
         ));
+    }
+
+    #[test]
+    fn preview_protocol_only_grants_cors_to_the_app_origin() {
+        assert!(is_trusted_origin_header("http://tauri.localhost"));
+        assert!(!is_trusted_origin_header("https://fonts.google.com"));
+        assert!(!is_trusted_origin_header("null"));
+        assert!(!is_trusted_origin_header("not a url"));
     }
 
     #[test]

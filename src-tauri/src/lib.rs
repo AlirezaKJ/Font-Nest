@@ -4,6 +4,7 @@ mod dto;
 mod font_inspection;
 mod font_platform;
 mod google_fonts;
+mod local_fonts;
 mod managed_installations;
 mod release_notes;
 
@@ -16,7 +17,48 @@ mod release_notes;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .manage(commands::CatalogueState::default())
+        .manage(local_fonts::PreviewStore::default())
+        // Serves validated local-font bytes to the WebView by opaque handle only.
+        // The registry never exposes a filesystem path, and an unknown or malformed
+        // handle yields 404, so nothing but already-validated fonts can be loaded.
+        .register_uri_scheme_protocol("fontnest-preview", |ctx, request| {
+            use tauri::Manager;
+
+            let handle = request.uri().path().trim_start_matches('/');
+            let store = ctx.app_handle().state::<local_fonts::PreviewStore>();
+            let (status, body) = match store.get(handle) {
+                Some(bytes) => (tauri::http::StatusCode::OK, bytes.to_vec()),
+                None => (tauri::http::StatusCode::NOT_FOUND, Vec::new()),
+            };
+
+            // The web view fetches fonts in CORS mode, so without an explicit grant the
+            // bytes are blocked. Echo the requesting origin only when it is the app's own
+            // web view; any other origin gets no grant and the fetch stays blocked.
+            let allowed_origin = request
+                .headers()
+                .get(tauri::http::header::ORIGIN)
+                .and_then(|origin| origin.to_str().ok())
+                .filter(|origin| commands::is_trusted_origin_header(origin))
+                .map(std::borrow::ToOwned::to_owned);
+
+            let mut response = tauri::http::Response::builder()
+                .status(status)
+                .header(tauri::http::header::CONTENT_TYPE, "font/ttf")
+                .header(tauri::http::header::CACHE_CONTROL, "no-store")
+                .header(tauri::http::header::VARY, "Origin");
+            if let Some(origin) = allowed_origin {
+                response =
+                    response.header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+            }
+            response.body(body).unwrap_or_else(|_| {
+                tauri::http::Response::builder()
+                    .status(tauri::http::StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Vec::new())
+                    .expect("an empty error response always builds")
+            })
+        })
         .setup(|app| {
             use tauri::Manager;
 
@@ -56,6 +98,7 @@ pub fn run() {
             commands::inspect_font_face,
             commands::inspect_font_glyph_outline,
             commands::export_font_face_parser_json,
+            commands::validate_font_file,
             commands::list_google_fonts,
             commands::get_google_font_details,
             commands::prepare_google_font_preview,

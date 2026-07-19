@@ -13,6 +13,7 @@ import type { GoogleFontInstallResult } from '$lib/bindings/GoogleFontInstallRes
 import type { GoogleFontPage } from '$lib/bindings/GoogleFontPage';
 import type { GoogleFontPageRequest } from '$lib/bindings/GoogleFontPageRequest';
 import type { GoogleFontPreview } from '$lib/bindings/GoogleFontPreview';
+import type { ValidatedLocalFont } from '$lib/bindings/ValidatedLocalFont';
 
 export function greet(name: string): Promise<Greeting> {
 	return invoke<Greeting>('greet', { name });
@@ -34,6 +35,10 @@ export function inspectFontGlyphOutline(
 
 export function exportFontFaceParserJson(faceId: string): Promise<FontParserJsonExport> {
 	return invoke<FontParserJsonExport>('export_font_face_parser_json', { faceId });
+}
+
+export function validateFontFile(path: string): Promise<ValidatedLocalFont> {
+	return invoke<ValidatedLocalFont>('validate_font_file', { path });
 }
 
 export function listGoogleFonts(request: GoogleFontPageRequest): Promise<GoogleFontPage> {

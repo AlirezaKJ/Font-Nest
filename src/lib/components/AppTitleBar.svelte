@@ -427,9 +427,12 @@
 	}
 
 	.titlebar-search input:focus-visible {
-		border-color: #c6b98f;
-		outline: 2px solid #c6b98f;
+		outline: 2px solid var(--focus-ring);
 		outline-offset: 1px;
+	}
+
+	:global(:root[data-focus-outlines='on']) .titlebar-search input:focus-visible {
+		border-color: #c6b98f;
 	}
 
 	.titlebar-search input::placeholder {
@@ -539,7 +542,7 @@
 	}
 
 	.app-titlebar :where(button, input, summary):focus-visible {
-		outline-color: #c6b98f;
+		outline-color: var(--focus-ring);
 	}
 
 	@keyframes catalogue-pulse {

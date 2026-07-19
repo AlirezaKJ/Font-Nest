@@ -10,6 +10,34 @@ a bundled copy when you are offline.
 
 ## [Unreleased]
 
+### Added
+
+- A Focus outlines setting under Settings > Accessibility. Turn it on to draw a visible outline
+  around whatever has keyboard focus (the editable preview text, search, buttons, and controls),
+  which helps if you navigate with the keyboard. It is off by default.
+
+### Changed
+
+- Previewing a font file from disk now opens the system file picker and shows the font in its own
+  preview, instead of quietly adding a temporary entry to your library. For now you can preview
+  TrueType and OpenType files (.ttf, .otf, .ttc, .otc).
+
+### Fixed
+
+- The window now appears as soon as it has finished painting instead of hanging back for a few
+  seconds. It was missing a permission it needed to show itself, so it was falling through to a
+  delayed safety net.
+- Darkened a few of the faintest labels in light mode. The smallest secondary text was too low
+  contrast to read comfortably against the lighter panels; it now meets the accessibility contrast
+  bar.
+
+### Security
+
+- A font file you preview from disk is now checked by FontNest's Rust core before any of its bytes
+  reach the preview. Every face is parsed and validated first, and the bytes are served to the
+  preview through an internal handle rather than a file path, so a malformed or hostile font cannot
+  slip straight into the app.
+
 ## [0.1.2] - 2026-07-19
 
 ### Added

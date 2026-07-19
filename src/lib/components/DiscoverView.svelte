@@ -1173,7 +1173,13 @@
 
 	.search-control:focus-within,
 	.preview-text-control:focus-within {
-		border-color: var(--color-focus);
+		border-color: var(--focus-ring-border);
+	}
+
+	.search-control:has(input:focus-visible),
+	.preview-text-control:has(input:focus-visible) {
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
 	}
 
 	.search-control input,

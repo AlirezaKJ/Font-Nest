@@ -17,8 +17,8 @@
 	--color-raised: #ffffff;
 	--color-control: #ffffff;
 	--color-text: #292a27;
-	--color-muted: #6e6d66;
-	--color-subtle: #817f77;
+	--color-muted: #656459;
+	--color-subtle: #6b6a61;
 	--color-border: #d9d8d1;
 	--color-accent: #33352f;
 	--color-accent-hover: #45483f;
@@ -26,6 +26,10 @@
 	--color-selected: #deddd5;
 	--color-hover: #e9e8e1;
 	--color-focus: #766746;
+	/* Focus outlines are opt-in (Settings > Accessibility). Off by default, these
+	   tokens resolve to no visible ring; the toggle flips them to --color-focus. */
+	--focus-ring: transparent;
+	--focus-ring-border: var(--color-border);
 	--color-success: #52705a;
 	--color-warning: #91631f;
 	--color-danger: #9d3b33;
@@ -107,6 +111,12 @@
 	--logo-filter: invert(1);
 	--shadow-floating: 0 8px 24px rgba(0, 0, 0, 0.32);
 	--shadow-sticky: 0 16px 38px rgba(0, 0, 0, 0.3);
+}
+
+/* Enabled from Settings > Accessibility; makes every focus ring visible again. */
+:root[data-focus-outlines='on'] {
+	--focus-ring: var(--color-focus);
+	--focus-ring-border: var(--color-focus);
 }
 
 * {
@@ -223,7 +233,7 @@ input[type='range'] {
 }
 
 :where(button, input, select, textarea, summary, a):focus-visible {
-	outline: 2px solid var(--color-focus);
+	outline: 2px solid var(--focus-ring);
 	outline-offset: 2px;
 }
 

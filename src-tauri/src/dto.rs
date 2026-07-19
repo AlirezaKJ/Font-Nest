@@ -330,6 +330,36 @@ pub struct GoogleFontInstallResult {
     pub already_installed_artifact_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct LocalFontFaceSummary {
+    pub face_index: u32,
+    pub family_name: String,
+    pub subfamily_name: String,
+    pub full_name: String,
+    pub post_script_name: String,
+    pub is_variable: bool,
+    pub glyph_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct ValidatedLocalFont {
+    /// Opaque handle the internal preview protocol resolves to validated bytes.
+    pub handle: String,
+    /// Synthetic family name so a duplicate installed family cannot shadow the preview.
+    pub preview_family: String,
+    /// Internal-protocol URL the web view loads the validated bytes from.
+    pub preview_url: String,
+    /// Sanitized display file name. Never an authoritative filesystem path.
+    pub file_name: String,
+    pub format: String,
+    pub face_count: u32,
+    pub faces: Vec<LocalFontFaceSummary>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CommandError {
     pub code: &'static str,
@@ -411,6 +441,27 @@ impl CommandError {
         Self {
             code: "font_glyph_unavailable",
             message: "The selected font does not expose that character as a glyph.",
+        }
+    }
+
+    pub const fn local_font_unreadable() -> Self {
+        Self {
+            code: "local_font_unreadable",
+            message: "FontNest could not read that font file. Check that it still exists.",
+        }
+    }
+
+    pub const fn local_font_too_large() -> Self {
+        Self {
+            code: "local_font_too_large",
+            message: "That font file is too large for FontNest to preview.",
+        }
+    }
+
+    pub const fn local_font_invalid() -> Self {
+        Self {
+            code: "local_font_invalid",
+            message: "That file is not a valid desktop font FontNest can preview.",
         }
     }
 

@@ -71,15 +71,15 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 
 ### Immediate cleanup and correctness
 
-- [ ] **P0** Route every user-selected local font through a Rust `validate_font_file` command before the WebView can load it; return an opaque preview handle rather than raw bytes or a path.
+- [x] **P0** Route every user-selected local font through a Rust `validate_font_file` command before the WebView can load it; return an opaque preview handle rather than raw bytes or a path.
 - [ ] **P0** Add a durable operation journal and startup recovery before enabling managed uninstall or update.
 - [ ] **P0** Make uninstall authorization independent of editable SQLite paths: verify canonical containment, reparse-point status, managed filename, content hash, registry mapping, provider identity, and protection state.
 - [ ] **P0** Bound, cancel, and page/stream the in-progress parser JSON export; do not build every codepoint and glyph into one unbounded pretty-JSON IPC string or hold catalogue state locked throughout parsing.
 - [ ] **P1** Finish and verify the in-progress inspection backend: format/Clippy clean, derive the parser version, cap output, generate bindings, add frontend adapters/tests, and integrate the UI.
 - [ ] **P0** Replace display-name-derived family IDs and scan-local path-derived face IDs with rename-stable, collision-resistant, database-backed IDs.
 - [ ] **P1** Replace the one-response installed catalogue with cached SQLite summaries, pagination, and ordered Channel batches.
-- [ ] **P0** Restore a visible WCAG 2.2 focus indicator to editable specimen, search, and wrapped text controls.
-- [ ] **P0** Correct light-mode tertiary text contrast for small labels and verify every foreground/surface token pairing.
+- [x] **P0** Restore a visible WCAG 2.2 focus indicator to editable specimen, search, and wrapped text controls.
+- [x] **P0** Correct light-mode tertiary text contrast for small labels and verify every foreground/surface token pairing.
 - [ ] **P1** Add keyboard and assistive-technology reordering for saved previews.
 - [ ] **P1** Make glyph coverage truthful; never let system fallback masquerade as coverage in the selected font.
 - [ ] **P1** Reconcile Tauri's `minWidth: 920` with the CSS breakpoints so Windows Snap and compact layouts are actually reachable.
@@ -191,6 +191,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 
 - [ ] **P1** Inspect and preview desktop SFNT fonts: TTF, OTF, TTC, and OTC.
 - [ ] **P1** Inspect and preview web fonts: WOFF and WOFF2; keep them preview-only until an explicit conversion workflow is approved.
+- [ ] **P1** Extend the local validation boundary to WOFF and WOFF2. Decode the container to SFNT bytes in Rust, under the same resource limits, before `validate_font_file` parses it, so decoded bytes still cross the trust boundary and preview through the `fontnest-preview` protocol. Keep them preview-only (no install/convert). Local import is SFNT-only today (`ttf`/`otf`/`ttc`/`otc`) because `ttf-parser` cannot read compressed containers. Crate options researched 2026-07-19: WOFF v1 is per-table zlib and is decodable with `flate2` or `allsorts`; for WOFF2 the choices are the pure-Rust `woff2` crate (`convert_woff2_to_ttf`, decode-only, but does not yet handle `hmtx` table transforms so it rejects some real fonts), `woofwoof` (wraps Google's reference WOFF2 C++ decoder with pure-Rust brotli, most correct but adds a C++ build step), or `allsorts` (pure Rust, parses WOFF and WOFF2 fully but pulls in a large shaping/subsetting dependency). Decode to SFNT then reuse the existing `local_fonts` validator; do not add a second parser path.
 - [ ] **P1** Support TrueType outlines, CFF, CFF2, static fonts, variable fonts, and named instances.
 - [ ] **P1** Detect COLR/CPAL v0/v1, SVG, sbix, CBDT/CBLC, bitmap strikes, and emoji/symbol fonts.
 - [ ] **P1** Validate every face in a collection, not only face index zero.
@@ -281,6 +282,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 
 ### Specimens and proofing
 
+- [ ] **P1** Build a fuller "preview a font file" dialog. The shipped one shows a single specimen line, the container format, and a face list. It should let the user edit the specimen text inline, change size, tracking, line height, and alignment, preview every face in the file under its own style instead of only face zero (needs collection face index in preview resolution), drive variable axes and named instances, toggle OpenType features, inspect glyph coverage and metrics, switch between waterfall and paragraph layouts, copy the reproducible CSS declaration, and continue into installing the file. Keep the trust boundary unchanged: everything still renders from validated bytes served by opaque handle.
 - [ ] **P1** Add built-in specimens for family name, pangram, paragraph, headline, UI copy, numerals/currency, code, punctuation, diacritics, and multilingual text.
 - [ ] **P1** Add waterfall, paragraph, poster, type scale, UI component, code editor, print proof, and custom multi-block layouts.
 - [ ] **P1** Let users add, duplicate, rename, reorder, save, import, and export specimen blocks/presets.
