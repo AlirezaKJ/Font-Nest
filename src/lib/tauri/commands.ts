@@ -57,6 +57,10 @@ export function installGoogleFont(
 	});
 }
 
+export function fetchRemoteChangelog(): Promise<string> {
+	return invoke<string>('fetch_remote_changelog');
+}
+
 export function checkForAppUpdate(): Promise<AppUpdateInfo | null> {
 	return invoke<AppUpdateInfo | null>('check_for_app_update');
 }

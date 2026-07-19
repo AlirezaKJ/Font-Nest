@@ -358,6 +358,13 @@ impl CommandError {
         }
     }
 
+    pub const fn release_notes_unavailable() -> Self {
+        Self {
+            code: "release_notes_unavailable",
+            message: "FontNest could not fetch the latest release notes. Showing the bundled copy.",
+        }
+    }
+
     pub const fn update_unavailable() -> Self {
         Self {
             code: "update_unavailable",

@@ -12,6 +12,7 @@ use crate::dto::{
 };
 use crate::font_inspection::FontInspectionError;
 use crate::google_fonts::{self, GoogleFontsError};
+use crate::release_notes::{self, ReleaseNotesError};
 
 const MAX_NAME_LENGTH: usize = 64;
 const FACE_ID_PREFIX: &str = "face:";
@@ -216,6 +217,14 @@ pub async fn install_google_font(
 }
 
 #[tauri::command]
+pub async fn fetch_remote_changelog(window: tauri::WebviewWindow) -> Result<String, CommandError> {
+    ensure_trusted_window(&window)?;
+    release_notes::fetch_changelog()
+        .await
+        .map_err(|error| map_release_notes_error(&error))
+}
+
+#[tauri::command]
 pub async fn check_for_app_update(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
@@ -364,6 +373,11 @@ fn map_catalogue_inspection_error(error: &CatalogueInspectionError) -> CommandEr
         ) => CommandError::font_glyph_unavailable(),
         CatalogueInspectionError::Parser(_) => CommandError::font_parser_unavailable(),
     }
+}
+
+fn map_release_notes_error(error: &ReleaseNotesError) -> CommandError {
+    log::error!("Release notes fetch failed: {error}");
+    CommandError::release_notes_unavailable()
 }
 
 fn map_google_fonts_error(error: GoogleFontsError) -> CommandError {

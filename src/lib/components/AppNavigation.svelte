@@ -1,22 +1,23 @@
 <script lang="ts" module>
-	export type AppView = 'library' | 'discover' | 'duplicates' | 'preview' | 'settings';
+	export type AppView =
+		'library' | 'discover' | 'duplicates' | 'preview' | 'settings' | 'whatsNew';
 	export type PinnedFamily = { id: string; name: string };
 </script>
 
 <script lang="ts">
 	import { getDirectionalReorderPosition, type ReorderPosition } from '$lib/reorder';
 
-	import Icon from './Icon.svelte';
+	import Icon, { type IconName } from './Icon.svelte';
 
 	let {
 		view,
 		familyCount,
 		conflictCount,
 		loading,
-		mode,
 		collapsed,
 		pinnedFamilies,
 		activeFamilyId,
+		unseenRelease,
 		onNavigate,
 		onOpenPreview,
 		onClosePreview,
@@ -28,10 +29,10 @@
 		familyCount: number;
 		conflictCount: number;
 		loading: boolean;
-		mode: 'native' | 'browser';
 		collapsed: boolean;
 		pinnedFamilies: PinnedFamily[];
 		activeFamilyId: string | null;
+		unseenRelease: boolean;
 		onNavigate: (view: AppView) => void;
 		onOpenPreview: (familyId: string) => void;
 		onClosePreview: (familyId: string) => void;
@@ -94,17 +95,214 @@
 		draggedFamilyId = null;
 		dropTarget = null;
 	}
+
+	type FooterAction = {
+		key: string;
+		icon: IconName;
+		label: string;
+		disabled: boolean;
+		badge: boolean;
+		onSelect: () => void;
+	};
+
+	let footerActions = $derived<FooterAction[]>([
+		{
+			key: 'refresh',
+			icon: 'refresh',
+			label: 'Fetch fonts',
+			disabled: loading,
+			badge: false,
+			onSelect: onRefresh
+		},
+		{
+			key: 'whatsNew',
+			icon: 'sparkle',
+			label: 'Patch notes',
+			disabled: false,
+			badge: unseenRelease,
+			onSelect: () => onNavigate('whatsNew')
+		},
+		{
+			key: 'settings',
+			icon: 'settings',
+			label: 'Settings',
+			disabled: false,
+			badge: false,
+			onSelect: () => onNavigate('settings')
+		}
+	]);
+
+	// A single sliding highlight is shared by every sidebar item — primary nav, saved previews,
+	// and footer actions. Each element registers under a stable key; the pill parks on the active
+	// view and follows hover / focus anywhere in the sidebar.
+	let navContentElement = $state<HTMLElement>();
+	let footerRowElement = $state<HTMLElement>();
+	let itemNodes = $state<Record<string, HTMLElement | null>>({});
+	let hoveredKey = $state<string | null>(null);
+	let focusedKey = $state<string | null>(null);
+	// Geometry and visibility are separate state so measureIndicator never reads what it writes
+	// (reading `indicator` inside the measuring effect would create an update loop).
+	let indicator = $state({ x: 0, y: 0, width: 0, height: 0 });
+	let indicatorVisible = $state(false);
+
+	let activeKey = $derived.by(() => {
+		switch (view) {
+			case 'library':
+				return 'nav:library';
+			case 'discover':
+				return 'nav:discover';
+			case 'duplicates':
+				return 'nav:conflicts';
+			case 'whatsNew':
+				return 'action:whatsNew';
+			case 'settings':
+				return 'action:settings';
+			case 'preview':
+				return activeFamilyId ? `preview:${activeFamilyId}` : null;
+			default:
+				return null;
+		}
+	});
+	// Hover wins over keyboard focus, which wins over the parked active view.
+	let highlightedKey = $derived(hoveredKey ?? focusedKey ?? activeKey);
+	let expandedActionKey = $derived(
+		highlightedKey?.startsWith('action:') ? highlightedKey.slice(7) : null
+	);
+
+	// Footer geometry constants, mirrored from the CSS below.
+	const FOOTER_GAP = 4;
+	const FOOTER_COLLAPSED = 32;
+	const FOOTER_ICON_GAP = 7;
+
+	// Registers a node under a key so the shared indicator can locate it.
+	function registerItem(node: HTMLElement, key: string) {
+		let currentKey = key;
+		itemNodes[currentKey] = node;
+		return {
+			update(nextKey: string) {
+				if (nextKey === currentKey) return;
+				itemNodes[currentKey] = null;
+				currentKey = nextKey;
+				itemNodes[currentKey] = node;
+			},
+			destroy() {
+				itemNodes[currentKey] = null;
+			}
+		};
+	}
+
+	function isVisible(node: HTMLElement): boolean {
+		return node.offsetParent !== null;
+	}
+
+	// The expanded footer button grows via a CSS width transition. Reading its live rect would
+	// return a mid-animation width, so the pill's target is derived from the label's intrinsic
+	// width instead — this lets the button animate freely while the pill lands on the final size.
+	function footerGeometry(actionKey: string, content: HTMLElement, contentRect: DOMRect) {
+		const row = footerRowElement;
+		if (!row || !isVisible(row)) return null;
+		const keys = footerActions.map((action) => action.key);
+		const index = keys.indexOf(actionKey);
+		if (index < 0) return null;
+
+		const widths = keys.map((key) => {
+			if (key !== expandedActionKey) return FOOTER_COLLAPSED;
+			const label = itemNodes[`action:${key}`]?.querySelector<HTMLElement>('.action-label');
+			return FOOTER_COLLAPSED + FOOTER_ICON_GAP + (label ? Math.ceil(label.scrollWidth) : 0);
+		});
+		const total =
+			widths.reduce((sum, width) => sum + width, 0) + FOOTER_GAP * (keys.length - 1);
+		const rowRect = row.getBoundingClientRect();
+		let left = Math.max(0, (row.clientWidth - total) / 2);
+		for (let i = 0; i < index; i += 1) left += widths[i] + FOOTER_GAP;
+
+		return {
+			x: rowRect.left - contentRect.left + content.scrollLeft + left,
+			y: rowRect.top - contentRect.top + content.scrollTop,
+			width: widths[index],
+			height: FOOTER_COLLAPSED
+		};
+	}
+
+	function measureIndicator() {
+		const content = navContentElement;
+		const key = highlightedKey;
+		if (!content || !key) {
+			indicatorVisible = false;
+			return;
+		}
+		const contentRect = content.getBoundingClientRect();
+
+		let geometry: { x: number; y: number; width: number; height: number } | null = null;
+		if (key.startsWith('action:') && !collapsed) {
+			geometry = footerGeometry(key.slice(7), content, contentRect);
+		} else {
+			const node = itemNodes[key];
+			if (node && isVisible(node)) {
+				const rect = node.getBoundingClientRect();
+				geometry = {
+					x: rect.left - contentRect.left + content.scrollLeft,
+					y: rect.top - contentRect.top + content.scrollTop,
+					width: rect.width,
+					height: rect.height
+				};
+			}
+		}
+
+		if (!geometry || geometry.width === 0) {
+			indicatorVisible = false;
+			return;
+		}
+		indicator = geometry;
+		indicatorVisible = true;
+	}
+
+	$effect(() => {
+		// Re-measure whenever the target, layout inputs, or the item set change.
+		void highlightedKey;
+		void expandedActionKey;
+		void collapsed;
+		void footerActions;
+		void pinnedFamilies;
+		measureIndicator();
+	});
+
+	$effect(() => {
+		const content = navContentElement;
+		if (!content || typeof ResizeObserver === 'undefined') return;
+		const observer = new ResizeObserver(() => measureIndicator());
+		observer.observe(content);
+		// Web fonts change label widths after first paint; re-measure once they settle.
+		void document.fonts?.ready.then(measureIndicator);
+		return () => observer.disconnect();
+	});
+
+	let indicatorStyle = $derived(
+		`transform: translate(${indicator.x}px, ${indicator.y}px);` +
+			` width: ${indicator.width}px; height: ${indicator.height}px;` +
+			` opacity: ${indicatorVisible ? 1 : 0};`
+	);
 </script>
 
-<aside class:collapsed class="app-navigation" aria-label="Application navigation">
-	<div class="navigation-content">
+<aside
+	class:collapsed
+	class="app-navigation"
+	aria-label="Application navigation"
+	onpointerleave={() => (hoveredKey = null)}
+>
+	<div bind:this={navContentElement} class="navigation-content">
+		<span class="sidebar-indicator" style={indicatorStyle} aria-hidden="true"></span>
 		<nav aria-label="Primary">
 			<p class="nav-group-label">Workspace</p>
 			<button
+				use:registerItem={'nav:library'}
 				type="button"
 				class:active={view === 'library'}
 				aria-current={view === 'library' ? 'page' : undefined}
 				title={collapsed ? 'Library' : undefined}
+				onpointerenter={() => (hoveredKey = 'nav:library')}
+				onfocus={() => (focusedKey = 'nav:library')}
+				onblur={() => (focusedKey = null)}
 				onclick={() => onNavigate('library')}
 			>
 				<Icon name="library" size={17} />
@@ -112,20 +310,28 @@
 				{#if familyCount > 0}<span class="nav-count">{familyCount}</span>{/if}
 			</button>
 			<button
+				use:registerItem={'nav:discover'}
 				type="button"
 				class:active={view === 'discover'}
 				aria-current={view === 'discover' ? 'page' : undefined}
 				title={collapsed ? 'Discover' : undefined}
+				onpointerenter={() => (hoveredKey = 'nav:discover')}
+				onfocus={() => (focusedKey = 'nav:discover')}
+				onblur={() => (focusedKey = null)}
 				onclick={() => onNavigate('discover')}
 			>
 				<Icon name="font" size={17} />
 				<span class="nav-label">Discover</span>
 			</button>
 			<button
+				use:registerItem={'nav:conflicts'}
 				type="button"
 				class:active={view === 'duplicates'}
 				aria-current={view === 'duplicates' ? 'page' : undefined}
 				title={collapsed ? 'Conflicts' : undefined}
+				onpointerenter={() => (hoveredKey = 'nav:conflicts')}
+				onfocus={() => (focusedKey = 'nav:conflicts')}
+				onblur={() => (focusedKey = null)}
 				onclick={() => onNavigate('duplicates')}
 			>
 				<Icon name="duplicates" size={17} />
@@ -155,6 +361,7 @@
 						ondragend={handlePreviewDragEnd}
 					>
 						<button
+							use:registerItem={`preview:${family.id}`}
 							type="button"
 							class:active={view === 'preview' && activeFamilyId === family.id}
 							class="preview-nav-open"
@@ -162,6 +369,9 @@
 								? 'page'
 								: undefined}
 							title={family.name}
+							onpointerenter={() => (hoveredKey = `preview:${family.id}`)}
+							onfocus={() => (focusedKey = `preview:${family.id}`)}
+							onblur={() => (focusedKey = null)}
 							onclick={() => onOpenPreview(family.id)}
 						>
 							<Icon name="font" size={17} />
@@ -182,44 +392,39 @@
 		{/if}
 
 		<div class="catalogue-status">
-			<div class="status-line">
-				<span class:scanning={loading} class="status-indicator"></span>
-				<strong
-					>{loading
-						? 'Scanning catalogue'
-						: mode === 'native'
-							? 'Catalogue ready'
-							: 'Browser preview'}</strong
-				>
-				<div class="status-actions">
+			<div
+				bind:this={footerRowElement}
+				class="status-actions"
+				role="group"
+				aria-label="Workspace actions"
+			>
+				{#each footerActions as action (action.key)}
 					<button
+						use:registerItem={`action:${action.key}`}
 						type="button"
-						class="icon-button"
-						disabled={loading}
-						aria-label="Scan fonts again"
-						title="Scan fonts again"
-						onclick={onRefresh}
+						class="action-button"
+						class:active={activeKey === `action:${action.key}`}
+						class:expanded={expandedActionKey === action.key}
+						disabled={action.disabled}
+						aria-label={action.badge
+							? `${action.label} (new release available)`
+							: action.label}
+						aria-current={activeKey === `action:${action.key}` ? 'page' : undefined}
+						title={action.label}
+						onpointerenter={() => (hoveredKey = `action:${action.key}`)}
+						onfocus={() => (focusedKey = `action:${action.key}`)}
+						onblur={() => (focusedKey = null)}
+						onclick={action.onSelect}
 					>
-						<Icon name="refresh" size={15} />
+						<span class="action-icon">
+							<Icon name={action.icon} size={16} />
+							{#if action.badge}<span class="unseen-dot" aria-hidden="true"
+								></span>{/if}
+						</span>
+						<span class="action-label">{action.label}</span>
 					</button>
-					<button
-						type="button"
-						class:active={view === 'settings'}
-						class="icon-button"
-						aria-label="Open settings"
-						aria-current={view === 'settings' ? 'page' : undefined}
-						title="Settings"
-						onclick={() => onNavigate('settings')}
-					>
-						<Icon name="settings" size={15} />
-					</button>
-				</div>
+				{/each}
 			</div>
-			<p>
-				{mode === 'native'
-					? `${familyCount.toLocaleString()} installed families`
-					: 'Sample data for UI development'}
-			</p>
 		</div>
 	</div>
 
@@ -250,6 +455,7 @@
 	}
 
 	.navigation-content {
+		position: relative;
 		display: flex;
 		height: 100%;
 		min-width: 0;
@@ -257,6 +463,24 @@
 		overflow-x: hidden;
 		overflow-y: auto;
 		padding: var(--space-lg) var(--space-md) var(--space-md);
+	}
+
+	/* One highlight shared by every sidebar item; slides between nav, previews, and footer. */
+	.sidebar-indicator {
+		position: absolute;
+		top: 0;
+		left: 0;
+		z-index: 0;
+		border-radius: var(--radius-md);
+		background: var(--color-selected);
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-text) 6%, transparent);
+		pointer-events: none;
+		will-change: transform, width, height;
+		transition:
+			transform var(--motion-standard),
+			width var(--motion-standard),
+			height var(--motion-standard),
+			opacity var(--motion-fast);
 	}
 
 	.sidebar-edge-zone {
@@ -323,6 +547,8 @@
 	}
 
 	nav {
+		position: relative;
+		z-index: 1;
 		display: grid;
 		gap: 3px;
 		margin-top: 12px;
@@ -368,7 +594,6 @@
 
 	nav button:hover {
 		color: var(--color-text);
-		background: var(--color-hover);
 	}
 
 	nav button:active {
@@ -377,7 +602,6 @@
 
 	nav button.active {
 		color: var(--color-text);
-		background: var(--color-selected);
 	}
 
 	.nav-label {
@@ -434,7 +658,6 @@
 	.preview-nav-item:hover .preview-nav-open:not(.active),
 	.preview-nav-item:focus-within .preview-nav-open:not(.active) {
 		color: var(--color-text);
-		background: var(--color-hover);
 	}
 
 	nav .preview-nav-close {
@@ -493,75 +716,93 @@
 	}
 
 	.catalogue-status {
+		position: relative;
+		z-index: 1;
 		margin-top: auto;
-		padding: 12px 8px 2px;
+		padding: 8px 2px 2px;
 		border-top: 1px solid var(--color-border);
 	}
 
-	.status-line {
-		display: grid;
-		grid-template-columns: auto minmax(0, 1fr) auto;
-		align-items: center;
-		gap: 7px;
-		font-size: var(--text-label);
-	}
-
-	.status-line strong {
-		overflow: hidden;
-		font-weight: 600;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.status-indicator {
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		background: var(--color-success);
-	}
-
-	.status-indicator.scanning {
-		background: var(--color-warning);
-		animation: status-pulse 1.2s ease-in-out infinite;
-	}
-
 	.status-actions {
+		position: relative;
 		display: flex;
 		align-items: center;
+		justify-content: center;
+		gap: 4px;
 	}
 
-	.catalogue-status p {
-		margin: 5px 0 0 14px;
-		color: var(--color-subtle);
-		font-size: var(--text-micro);
-		line-height: 1.4;
-	}
-
-	.icon-button {
-		display: grid;
-		width: 28px;
-		height: 28px;
-		place-items: center;
+	.action-button {
+		position: relative;
+		z-index: 1;
+		display: flex;
+		height: 32px;
+		align-items: center;
+		padding: 0 8px;
 		border: 0;
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-md);
 		color: var(--color-muted);
 		background: transparent;
 		cursor: pointer;
+		transition: color var(--motion-fast);
 	}
 
-	.icon-button:hover:not(:disabled) {
+	.action-button.expanded {
 		color: var(--color-text);
-		background: var(--color-selected);
 	}
 
-	.icon-button.active {
-		color: var(--color-text);
-		background: var(--color-selected);
-	}
-
-	.icon-button:disabled {
+	.action-button:disabled {
 		cursor: wait;
 		opacity: 0.5;
+	}
+
+	.action-icon {
+		position: relative;
+		display: grid;
+		width: 16px;
+		height: 16px;
+		flex: none;
+		place-items: center;
+	}
+
+	.action-label {
+		max-width: 0;
+		margin-left: 0;
+		overflow: hidden;
+		font-size: var(--text-label);
+		font-weight: 650;
+		white-space: nowrap;
+		opacity: 0;
+		transition:
+			max-width var(--motion-standard),
+			margin-left var(--motion-standard),
+			opacity var(--motion-fast);
+	}
+
+	.action-button.expanded .action-label {
+		max-width: 92px;
+		margin-left: 7px;
+		opacity: 1;
+	}
+
+	.unseen-dot {
+		position: absolute;
+		top: -2px;
+		right: -2px;
+		width: 6px;
+		height: 6px;
+		border: 1.5px solid var(--color-panel);
+		border-radius: 50%;
+		background: var(--color-warning);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.sidebar-indicator,
+		.action-button,
+		.action-label {
+			transition:
+				opacity var(--motion-fast),
+				color var(--motion-fast);
+		}
 	}
 
 	@media (min-width: 820px) {
@@ -586,8 +827,7 @@
 		.collapsed .nav-label,
 		.collapsed .nav-count,
 		.collapsed .nav-group-label,
-		.collapsed .status-line strong,
-		.collapsed .catalogue-status p {
+		.collapsed .action-label {
 			display: none;
 		}
 
@@ -595,20 +835,15 @@
 			padding-inline: 0;
 		}
 
-		.collapsed .status-line {
-			display: flex;
-			flex-direction: column;
-			gap: 5px;
-		}
-
+		/* Narrow rail: icon-only actions stacked vertically; the pill slides up and down. */
 		.collapsed .status-actions {
 			flex-direction: column;
 		}
-	}
 
-	@keyframes status-pulse {
-		50% {
-			opacity: 0.45;
+		.collapsed .action-button {
+			width: 34px;
+			justify-content: center;
+			padding: 0;
 		}
 	}
 

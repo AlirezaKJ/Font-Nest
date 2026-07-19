@@ -5,6 +5,7 @@ mod font_inspection;
 mod font_platform;
 mod google_fonts;
 mod managed_installations;
+mod release_notes;
 
 /// Starts the `FontNest` desktop application.
 ///
@@ -42,6 +43,7 @@ pub fn run() {
             commands::get_google_font_details,
             commands::prepare_google_font_preview,
             commands::install_google_font,
+            commands::fetch_remote_changelog,
             commands::check_for_app_update,
             commands::install_app_update
         ])

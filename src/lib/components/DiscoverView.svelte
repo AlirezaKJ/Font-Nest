@@ -28,7 +28,6 @@
 	const MAX_LOADED_PREVIEWS = 24;
 	const PREVIEW_CONCURRENCY = 3;
 	const DEFAULT_SPECIMEN_SIZE = 112;
-	const DEFAULT_CUSTOM_TEXT = 'Hamburgefontsiv 0123';
 	const SKELETON_ROWS = [0, 1, 2, 3];
 
 	const CATEGORY_OPTIONS: DiscoverFilterOption[] = [
@@ -144,10 +143,14 @@
 
 	let {
 		installedFamilyNames,
+		previewText,
+		onPreviewText,
 		onInstalled,
 		onToast
 	}: {
 		installedFamilyNames: string[];
+		previewText: string;
+		onPreviewText: (value: string) => void;
 		onInstalled: () => void | Promise<void>;
 		onToast: (message: string, tone: 'success' | 'error') => void;
 	} = $props();
@@ -164,7 +167,6 @@
 	let availability = $state('all');
 	let sort = $state('name-asc');
 	let specimenMode = $state<SpecimenMode>('names');
-	let customSpecimenText = $state(DEFAULT_CUSTOM_TEXT);
 	let specimenSize = $state(DEFAULT_SPECIMEN_SIZE);
 	let loadingCatalogue = $state(true);
 	let loadMoreSentinel = $state<HTMLElement | null>(null);
@@ -226,7 +228,6 @@
 		Boolean(search) ||
 			activeFilters.length > 0 ||
 			specimenMode !== 'names' ||
-			customSpecimenText !== DEFAULT_CUSTOM_TEXT ||
 			specimenSize !== DEFAULT_SPECIMEN_SIZE
 	);
 
@@ -377,7 +378,6 @@
 		availability = 'all';
 		sort = 'name-asc';
 		specimenMode = 'names';
-		customSpecimenText = DEFAULT_CUSTOM_TEXT;
 		specimenSize = DEFAULT_SPECIMEN_SIZE;
 		void loadCatalogue(true);
 	}
@@ -511,9 +511,7 @@
 	}
 
 	function specimenText(family: GoogleFontFamilySummary) {
-		return specimenMode === 'names'
-			? family.family
-			: customSpecimenText.trim() || family.family;
+		return specimenMode === 'names' ? family.family : previewText.trim() || family.family;
 	}
 
 	function handleDiscoverScroll(event: Event) {
@@ -723,10 +721,10 @@
 				<Icon name="font" size={15} />
 				<input
 					type="text"
-					value={customSpecimenText}
+					value={previewText}
 					placeholder="Type a shared specimen"
 					disabled={specimenMode === 'names'}
-					oninput={(event) => (customSpecimenText = event.currentTarget.value)}
+					oninput={(event) => onPreviewText(event.currentTarget.value)}
 				/>
 			</label>
 			<div class="specimen-modes" role="group" aria-label="Specimen text mode">

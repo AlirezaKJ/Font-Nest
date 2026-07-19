@@ -1,9 +1,17 @@
+import { createRequire } from 'node:module';
+
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vitest/config';
 import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 
+const { version } = createRequire(import.meta.url)('./package.json') as { version: string };
+
 export default defineConfig({
+	define: {
+		// The running application version, kept in lockstep with Cargo and Tauri at release time.
+		__APP_VERSION__: JSON.stringify(version)
+	},
 	plugins: [
 		tailwindcss(),
 		sveltekit({

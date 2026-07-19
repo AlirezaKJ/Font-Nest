@@ -19,7 +19,8 @@
 		previewText,
 		onTheme,
 		onDensity,
-		onPreviewText
+		onPreviewText,
+		onViewReleaseNotes
 	}: {
 		theme: ThemePreference;
 		density: DensityPreference;
@@ -27,6 +28,7 @@
 		onTheme: (value: ThemePreference) => void;
 		onDensity: (value: DensityPreference) => void;
 		onPreviewText: (value: string) => void;
+		onViewReleaseNotes: () => void;
 	} = $props();
 
 	let updatePercent = $derived(progressPercent($appUpdater.downloaded, $appUpdater.total));
@@ -218,6 +220,11 @@
 						FontNest will close while Windows installs the update.
 					</p>
 				{/if}
+				<button type="button" class="notes-link" onclick={onViewReleaseNotes}>
+					<Icon name="sparkle" size={15} />
+					<span>See what's new in FontNest</span>
+					<Icon name="chevron" size={14} />
+				</button>
 			</div>
 		</section>
 
@@ -462,6 +469,34 @@
 		margin: -3px 0 0;
 		color: var(--color-subtle);
 		font-size: var(--text-micro);
+	}
+
+	.notes-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		align-self: start;
+		margin-top: 2px;
+		padding: 8px 10px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		color: var(--color-text);
+		background: var(--color-control);
+		font-size: var(--text-label);
+		font-weight: 600;
+		cursor: pointer;
+		transition:
+			background var(--motion-fast),
+			border-color var(--motion-fast);
+	}
+
+	.notes-link:hover {
+		background: var(--color-selected);
+	}
+
+	.notes-link :global(svg):last-child {
+		margin-left: auto;
+		color: var(--color-muted);
 	}
 
 	.shortcuts {

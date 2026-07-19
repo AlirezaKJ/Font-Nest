@@ -14,18 +14,20 @@
 	import DiscoverView from '$lib/components/DiscoverView.svelte';
 	import FontPreviewView from '$lib/components/FontPreviewView.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import PatchNotesView from '$lib/components/PatchNotesView.svelte';
 	import SettingsView, {
 		type DensityPreference,
 		type ThemePreference
 	} from '$lib/components/SettingsView.svelte';
 	import { createBrowserCatalogue } from '$lib/catalogue/browser-catalogue';
+	import { hasUnseenRelease } from '$lib/release-notes/loader';
 	import { reorderIds, type ReorderPosition } from '$lib/reorder';
 	import { isStickySurfaceElevated } from '$lib/sticky-surface';
 	import { scanInstalledFonts } from '$lib/tauri/commands';
 
 	const PAGE_SIZE = 120;
 	const SKELETON_ROWS = [0, 1, 2, 3];
-	const DEFAULT_PREVIEW = 'Hamburgefontsiv 0123 — Pack my box with five dozen liquor jugs.';
+	const DEFAULT_PREVIEW = 'What is life but a fevered dream';
 	const DEFAULT_SPECIMEN_SIZE = 96;
 	const MAX_DETAIL_FACES = 12;
 	const UPDATE_CHECK_DELAY_MS = 8_000;
@@ -71,8 +73,14 @@
 	type Toast = { message: string; tone: 'success' | 'error' };
 
 	let view = $state<AppView>('library');
+	let unseenRelease = $state(false);
 	let libraryControlsElement = $state<HTMLElement>();
 	let libraryControlsElevated = $state(false);
+
+	function navigate(nextView: AppView) {
+		if (nextView === 'whatsNew') unseenRelease = false;
+		view = nextView;
+	}
 
 	$effect(() => {
 		if (view !== 'library') libraryControlsElevated = false;
@@ -226,6 +234,12 @@
 		colorScheme.addEventListener('change', handleColorScheme);
 		window.addEventListener('keydown', handleKeydown);
 		void refreshCatalogue();
+
+		unseenRelease = hasUnseenRelease();
+		if (unseenRelease) {
+			showToast('FontNest was updated. Open What’s new to see what changed.', 'success');
+		}
+
 		if ('__TAURI_INTERNALS__' in window) {
 			updateCheckTimer = setTimeout(() => {
 				void checkForUpdates().then((update) => {
@@ -643,7 +657,7 @@
 	{theme}
 	settingsActive={view === 'settings'}
 	onSearch={updateGlobalSearch}
-	onNavigate={(nextView) => (view = nextView)}
+	onNavigate={navigate}
 	onToggleTheme={toggleTheme}
 	onRefresh={() => void refreshCatalogue()}
 	onPreview={openPreviewFilePicker}
@@ -659,11 +673,11 @@
 		familyCount={catalogue?.familyCount ?? 0}
 		conflictCount={catalogue?.conflictCount ?? 0}
 		{loading}
-		mode={catalogueMode}
 		collapsed={sidebarCollapsed}
 		{pinnedFamilies}
+		{unseenRelease}
 		activeFamilyId={view === 'preview' ? (selectedFamily?.id ?? null) : null}
-		onNavigate={(nextView) => (view = nextView)}
+		onNavigate={navigate}
 		onOpenPreview={openFamilyPreview}
 		onClosePreview={closeFamilyPreview}
 		onReorderPreview={reorderPinnedFamily}
@@ -1051,6 +1065,8 @@
 		{:else if view === 'discover'}
 			<DiscoverView
 				installedFamilyNames={catalogue?.families.map((family) => family.name) ?? []}
+				{previewText}
+				onPreviewText={setPreviewText}
 				onInstalled={refreshCatalogue}
 				onToast={showToast}
 			/>
@@ -1069,6 +1085,8 @@
 				onPreviewSize={(value) => (previewSize = value)}
 				onPreviewWeight={(value) => (previewWeight = value)}
 			/>
+		{:else if view === 'whatsNew'}
+			<PatchNotesView />
 		{:else}
 			<SettingsView
 				{theme}
@@ -1077,6 +1095,7 @@
 				onTheme={setTheme}
 				onDensity={setDensity}
 				onPreviewText={setPreviewText}
+				onViewReleaseNotes={() => navigate('whatsNew')}
 			/>
 		{/if}
 	</main>

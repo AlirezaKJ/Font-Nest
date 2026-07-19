@@ -31,21 +31,28 @@ will reject releases signed by a replacement key.
     - `package.json`
     - `src-tauri/Cargo.toml`
     - `src-tauri/tauri.conf.json`
-2. Run the full verification suite.
-3. Commit and push the release changes.
-4. Create and push the matching version tag. For version `0.1.0`:
+2. Update `CHANGELOG.md`:
+    - Rename the `## [Unreleased]` heading to `## [x.y.z] - YYYY-MM-DD` using today's date, and
+      start a fresh empty `## [Unreleased]` section above it.
+    - Add the version's comparison link at the bottom of the file.
+    - FontNest shows these notes in **What's new**. It reads the copy on `main` first and falls
+      back to the copy compiled into the build, so the changelog must be committed before the
+      tag is pushed.
+3. Run the full verification suite.
+4. Commit and push the release changes.
+5. Create and push the matching version tag. For version `0.1.0`:
 
     ```powershell
     git tag v0.1.0
     git push origin v0.1.0
     ```
 
-5. Watch the **Release FontNest** workflow in GitHub Actions.
-6. Open the draft GitHub Release and confirm that it contains:
+6. Watch the **Release FontNest** workflow in GitHub Actions.
+7. Open the draft GitHub Release and confirm that it contains:
     - the NSIS `setup.exe` installer;
     - the matching `.sig` updater signature;
     - `latest.json`.
-7. Review the generated release notes, then publish the draft.
+8. Review the generated release notes, then publish the draft.
 
 Draft releases are intentionally invisible to the updater's `releases/latest` endpoint. A
 release becomes available to installed applications only after the draft is published.
