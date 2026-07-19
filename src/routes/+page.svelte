@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { onMount } from 'svelte';
 
 	import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
@@ -210,6 +211,7 @@
 	onMount(() => {
 		loadPreferences();
 		applyTheme();
+		revealWindow();
 
 		const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
 		const handleColorScheme = () => {
@@ -309,6 +311,23 @@
 				: theme;
 		document.documentElement.dataset.theme = resolved;
 		document.documentElement.style.colorScheme = resolved;
+	}
+
+	function revealWindow() {
+		if (!('__TAURI_INTERNALS__' in window)) return;
+		// The native window launches hidden (visible:false in tauri.conf) so the user
+		// never sees the WebView's blank white background while the bundle loads. Reveal
+		// it only once the themed first frame has painted; the double requestAnimationFrame
+		// waits one full paint past mount.
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => {
+				void getCurrentWindow()
+					.show()
+					.catch((error) =>
+						console.error('FontNest could not reveal its window.', error)
+					);
+			});
+		});
 	}
 
 	function setTheme(value: ThemePreference) {

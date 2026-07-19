@@ -31,6 +31,23 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            // The main window launches hidden so the WebView's blank white background is
+            // never shown while the frontend loads; the frontend reveals it after the first
+            // themed frame paints. This is a safety net: if that reveal never runs (for
+            // example a startup script error), show the window anyway so the app can never
+            // be left running with no visible window.
+            if let Some(window) = app.get_webview_window("main") {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    if matches!(window.is_visible(), Ok(false)) {
+                        if let Err(error) = window.show() {
+                            log::error!("FontNest could not reveal the main window: {error}");
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

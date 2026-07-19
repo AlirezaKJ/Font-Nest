@@ -24,6 +24,12 @@ a bundled copy when you are offline.
 - The Fetch fonts view now uses the same preview text as the rest of the app, so what you type in
   one place shows up everywhere instead of keeping its own separate copy.
 
+### Fixed
+
+- FontNest no longer flashes a blank white screen or the wrong theme when it launches. The window
+  now stays hidden until its first frame is painted in your saved light or dark theme, so it opens
+  straight into the right colors.
+
 ## [0.1.1] - 2026-07-18
 
 ### Changed

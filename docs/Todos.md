@@ -3,7 +3,7 @@ title: FontNest Todos
 type: todo
 status: active
 created: 2026-06-05
-updated: 2026-07-18
+updated: 2026-07-19
 tags:
     - project
     - todo
@@ -85,7 +85,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P1** Reconcile Tauri's `minWidth: 920` with the CSS breakpoints so Windows Snap and compact layouts are actually reachable.
 - [ ] **P1** Make preview size controls accurate below 40px instead of clamping rendered output to 40px.
 - [ ] **P2** Release every dynamically loaded local `FontFace` and revoke associated object URLs when previews change or close.
-- [ ] **P2** Apply the resolved theme before first paint to prevent a light-theme startup flash.
+- [x] **P2** Apply the resolved theme before first paint to prevent a light-theme startup flash.
 - [ ] **P2** Bundle the approved Geist and Instrument Serif WOFF2 assets locally with complete `@font-face` definitions and system fallbacks.
 - [ ] **P2** Announce blocking errors assertively and keep safe technical details copyable.
 - [ ] **P2** Remove slider/layout animations that lag direct manipulation; remove decorative style-row entrance choreography.
@@ -99,10 +99,11 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 
 ## 2. Repository, governance, and developer experience
 
-- [ ] **P1** Choose and add the project licence.
+- [x] **P1** Choose and add the project licence.
 - [ ] **P1** Add `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, issue templates, and pull-request templates.
 - [ ] **P1** Document the architecture, trust boundaries, generated-code policy, migration policy, and platform adapter contract.
-- [ ] **P1** Add Conventional Commit guidance and an automated changelog/release-note path.
+- [x] **P1** Add an automated changelog/release-note path (repo `CHANGELOG.md` plus the in-app What's New view backed by the changelog parser and remote/bundled loader).
+- [ ] **P1** Add Conventional Commit guidance.
 - [ ] **P1** Pin and automatically update Rust, Node, pnpm, Cargo, and JavaScript dependencies with reviewed lockfile changes.
 - [ ] **P1** Verify generated Rust/TypeScript bindings in CI and fail on drift.
 - [ ] **P1** Add checks for formatted code, lint, type safety, tests, licences, vulnerabilities, generated resources, and docs links.
@@ -692,17 +693,20 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [x] Configure app name, identifier, version, description, restrictive CSP, and application icons.
 - [x] Adopt the supplied logo mark and Quiet Ledger brand direction.
 - [ ] **P1** Finalize the FontNest name across GitHub, package ecosystems, domains, and social accounts.
-- [ ] **P1** Add the project licence before public binary distribution.
+- [x] **P1** Add the project licence before public binary distribution.
 - [ ] **P1** Complete monochrome/full-color logo variants, wordmark/lockup, and PNG icon sizes.
 - [ ] **P1** Bundle a signed Windows installer with clean install, repair, update, downgrade policy, uninstall, and residue tests.
 - [ ] **P1** Choose and test offline, embedded, or download-bootstrap WebView2 installer behavior, including missing-runtime recovery.
 - [ ] **P1** Add code signing and build reputation planning for Windows.
-- [ ] **P1** Add the signed Tauri updater with stable/beta channels, signature verification, rollback policy, and recovery from interrupted updates.
-- [ ] **P1** Add update-check/download progress, release notes, defer/remind later, skipped versions, relaunch control, staged rollout, and last-known-good recovery.
+- [x] **P1** Add the signed Tauri updater with signature verification, tested end to end from the GitHub release feed.
+- [ ] **P1** Add updater stable/beta channels, rollback policy, and recovery from interrupted updates.
+- [x] **P1** Add update-check, download progress, and release notes to the update flow.
+- [ ] **P1** Add updater defer/remind later, skipped versions, relaunch control, staged rollout, and last-known-good recovery.
 - [ ] **P1** Disable production DevTools/remote debugging and verify packaged CSP/capabilities.
 - [ ] **P1** Publish checksums, SBOM, third-party notices, release notes, and supported Windows/WebView2 requirements.
 - [ ] **P1** Expand README with product story, features, safety model, screenshots, installation, development, architecture, privacy, and troubleshooting.
-- [ ] **P1** Add CHANGELOG, contributor docs, security reporting, privacy statement, support policy, and user guide.
+- [x] **P1** Add the CHANGELOG.
+- [ ] **P1** Add contributor docs, security reporting, privacy statement, support policy, and user guide.
 - [ ] **P1** Document backup/restore, database migration, managed uninstall, provider trust, licence warnings, and diagnostics export.
 - [ ] **P2** Add screenshots for both themes, store artwork, social/OG image, and a short demo video.
 - [ ] **P2** Add signed macOS `.dmg`/notarization and Linux AppImage/deb/rpm packages only after platform acceptance gates pass.
@@ -730,7 +734,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 
 ## 23. Open product and architecture decisions
 
-- [ ] Choose the repository/application licence.
+- [x] Choose the repository/application licence.
 - [ ] Freeze the opaque local file/face/family ID strategy and rename reconciliation rules.
 - [ ] Define exact, semantic, version, registration, and intentional-conflict semantics.
 - [ ] Define managed uninstall backup duration, undo behavior, locked-font recovery, and permanent-delete policy.
