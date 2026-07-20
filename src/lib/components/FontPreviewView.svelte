@@ -54,6 +54,8 @@
 		usesCodepointPlaceholder,
 		type GlyphSetScope
 	} from '$lib/glyph-categories';
+	import { contextMenu } from '$lib/context-menu/action';
+	import { faceContextMenu, glyphContextMenu } from '$lib/context-menu/entries';
 	import {
 		exportFontFaceParserJson,
 		inspectFontFace,
@@ -68,22 +70,30 @@
 		previewSize,
 		previewWeight,
 		pinned,
+		native,
 		onBack,
 		onTogglePinned,
 		onPreviewText,
 		onPreviewSize,
-		onPreviewWeight
+		onPreviewWeight,
+		onCopy,
+		onRevealFile,
+		onCopyFilePath
 	}: {
 		family: FontFamilySummary | null;
 		previewText: string;
 		previewSize: number;
 		previewWeight: number;
 		pinned: boolean;
+		native: boolean;
 		onBack: () => void;
 		onTogglePinned: () => void;
 		onPreviewText: (value: string) => void;
 		onPreviewSize: (value: number) => void;
 		onPreviewWeight: (value: number) => void;
+		onCopy: (label: string, value: string) => void;
+		onRevealFile: (faceId: string) => void;
+		onCopyFilePath: (faceId: string) => void;
 	} = $props();
 
 	// Local presentation controls — text/size/weight persist via the parent,
@@ -394,6 +404,28 @@
 		if (lockedGlyph === null) selectedGlyph = glyph;
 	}
 
+	function faceMenu(face: FontFamilySummary['faces'][number]) {
+		return faceContextMenu({
+			familyName: family?.name ?? '',
+			face,
+			native,
+			onRevealFile: () => onRevealFile(face.id),
+			onCopyFilePath: () => onCopyFilePath(face.id),
+			onCopy
+		});
+	}
+
+	function glyphMenu(codepoint: number) {
+		const glyph = String.fromCodePoint(codepoint);
+		return glyphContextMenu({
+			codepoint,
+			locked: lockedGlyph === glyph,
+			onToggleLock: () => toggleGlyphLock(glyph),
+			onAppendToPreviewText: () => onPreviewText(`${previewText}${glyph}`),
+			onCopy
+		});
+	}
+
 	function toggleGlyphLock(glyph: string) {
 		if (lockedGlyph === glyph) {
 			lockedGlyph = null;
@@ -507,7 +539,9 @@
 	}
 
 	function formatAxisValue(value: number): string {
-		return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+		return Number.isInteger(value)
+			? String(value)
+			: value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
 	}
 </script>
 
@@ -694,7 +728,11 @@
 
 				<ul class="style-list">
 					{#each family.faces as face, index (face.id)}
-						<li class="style-row" style={`--row-index: ${index};`}>
+						<li
+							use:contextMenu={() => faceMenu(face)}
+							class="style-row"
+							style={`--row-index: ${index};`}
+						>
 							<div class="style-meta">
 								<strong>{face.styleName || weightName(face.weight)}</strong>
 								<span class="style-tags">
@@ -726,13 +764,21 @@
 							>
 								{formatInteger(visibleGlyphCodepoints.length)}
 								{#if glyphSetScope === 'basic'}
-									<span class="count-total">/ {formatInteger(faceInspection.unicodeCodepoints.length)}</span>
+									<span class="count-total"
+										>/ {formatInteger(
+											faceInspection.unicodeCodepoints.length
+										)}</span
+									>
 								{/if}
 							</span>
 						{/if}
 					</h2>
 					<div class="character-controls">
-						<div class="glyph-set-switcher" role="group" aria-label="Character set size">
+						<div
+							class="glyph-set-switcher"
+							role="group"
+							aria-label="Character set size"
+						>
 							{#each GLYPH_SET_SCOPES as scope (scope.value)}
 								<button
 									type="button"
@@ -792,7 +838,8 @@
 							<div class="glyph-accordions">
 								{#each glyphCategories as group (group.key)}
 									{@const expanded = expandedGlyphCategories.has(group.key)}
-									{@const limit = glyphCategoryLimits[group.key] ?? INITIAL_GLYPH_BATCH}
+									{@const limit =
+										glyphCategoryLimits[group.key] ?? INITIAL_GLYPH_BATCH}
 									<section class:expanded class="glyph-accordion">
 										<button
 											type="button"
@@ -805,28 +852,42 @@
 												<strong>{group.label}</strong>
 												<small>{group.description}</small>
 											</span>
-											<span class="glyph-category-count">{formatInteger(group.codepoints.length)}</span>
-											<span class="glyph-accordion-chevron" aria-hidden="true"></span>
+											<span class="glyph-category-count"
+												>{formatInteger(group.codepoints.length)}</span
+											>
+											<span class="glyph-accordion-chevron" aria-hidden="true"
+											></span>
 										</button>
 
 										{#if expanded}
 											<div
 												id={`glyph-panel-${group.key}`}
 												class="glyph-accordion-panel"
-												in:slide={{ duration: prefersReducedMotion ? 0 : 300, easing: quintOut }}
-												out:slide={{ duration: prefersReducedMotion ? 0 : 220, easing: quintOut }}
+												in:slide={{
+													duration: prefersReducedMotion ? 0 : 300,
+													easing: quintOut
+												}}
+												out:slide={{
+													duration: prefersReducedMotion ? 0 : 220,
+													easing: quintOut
+												}}
 											>
 												<div
 													class="glyphs"
 													style={`font-family: ${safeFontStack(family.name)}; font-weight: ${glyphWeight}; font-style: ${selectedFace?.style ?? 'normal'};`}
 												>
 													{#each group.codepoints.slice(0, limit) as codepoint (codepoint)}
-														{@const glyph = String.fromCodePoint(codepoint)}
+														{@const glyph =
+															String.fromCodePoint(codepoint)}
 														<button
+															use:contextMenu={() =>
+																glyphMenu(codepoint)}
 															type="button"
 															class:active={selectedGlyph === glyph}
 															class:locked={lockedGlyph === glyph}
-															class:codepoint-placeholder={usesCodepointPlaceholder(codepoint)}
+															class:codepoint-placeholder={usesCodepointPlaceholder(
+																codepoint
+															)}
 															aria-pressed={lockedGlyph === glyph}
 															aria-label={lockedGlyph === glyph
 																? `Unlock ${glyphAccessibleName(codepoint)} from the character preview`
@@ -844,13 +905,37 @@
 												{#if limit < group.codepoints.length}
 													<div class="glyph-batch-actions">
 														<p>
-															Showing {formatInteger(Math.min(limit, group.codepoints.length))} of
+															Showing {formatInteger(
+																Math.min(
+																	limit,
+																	group.codepoints.length
+																)
+															)} of
 															{formatInteger(group.codepoints.length)}
 														</p>
-														<button type="button" onclick={() => showMoreGlyphs(group.key, group.codepoints.length)}>
-															Show next {formatInteger(Math.min(GLYPH_BATCH_SIZE, group.codepoints.length - limit))}
+														<button
+															type="button"
+															onclick={() =>
+																showMoreGlyphs(
+																	group.key,
+																	group.codepoints.length
+																)}
+														>
+															Show next {formatInteger(
+																Math.min(
+																	GLYPH_BATCH_SIZE,
+																	group.codepoints.length - limit
+																)
+															)}
 														</button>
-														<button type="button" onclick={() => showAllGlyphs(group.key, group.codepoints.length)}>
+														<button
+															type="button"
+															onclick={() =>
+																showAllGlyphs(
+																	group.key,
+																	group.codepoints.length
+																)}
+														>
 															Show all
 														</button>
 													</div>
@@ -861,7 +946,9 @@
 								{/each}
 							</div>
 						{:else}
-							<p class="glyph-coverage-message">This face does not expose Unicode-mapped characters.</p>
+							<p class="glyph-coverage-message">
+								This face does not expose Unicode-mapped characters.
+							</p>
 						{/if}
 					</div>
 
@@ -869,7 +956,11 @@
 						<div class="glyph-detail-inner">
 							<div class="glyph-view-toolbar">
 								<span>View</span>
-								<div class="glyph-view-switcher" role="group" aria-label="Glyph drawing mode">
+								<div
+									class="glyph-view-switcher"
+									role="group"
+									aria-label="Glyph drawing mode"
+								>
 									{#each GLYPH_VIEW_MODES as mode (mode.value)}
 										<button
 											type="button"
@@ -959,20 +1050,33 @@
 															<rect
 																x={glyphOutline.bounds.xMin}
 																y={glyphOutline.bounds.yMin}
-																width={glyphOutline.bounds.xMax - glyphOutline.bounds.xMin}
-																height={glyphOutline.bounds.yMax - glyphOutline.bounds.yMin}
+																width={glyphOutline.bounds.xMax -
+																	glyphOutline.bounds.xMin}
+																height={glyphOutline.bounds.yMax -
+																	glyphOutline.bounds.yMin}
 															/>
 														{/if}
 													</g>
 													<g class="glyph-handles" aria-hidden="true">
 														{#each glyphOutline.handles as handle, index (`${index}-${handle.x1}-${handle.y1}`)}
-															<line x1={handle.x1} y1={handle.y1} x2={handle.x2} y2={handle.y2} />
+															<line
+																x1={handle.x1}
+																y1={handle.y1}
+																x2={handle.x2}
+																y2={handle.y2}
+															/>
 														{/each}
 													</g>
 												{/if}
-												<path class="glyph-outline-path" d={glyphOutline.pathData} />
+												<path
+													class="glyph-outline-path"
+													d={glyphOutline.pathData}
+												/>
 												{#if glyphViewMode === 'points'}
-													<g class="glyph-outline-points" aria-hidden="true">
+													<g
+														class="glyph-outline-points"
+														aria-hidden="true"
+													>
 														{#each glyphOutline.points as point, index (`${index}-${point.x}-${point.y}`)}
 															<circle
 																class={point.kind}
@@ -990,7 +1094,8 @@
 										<p class="glyph-outline-status">
 											{glyphOutlineLoading
 												? 'Tracing glyph outlineâ€¦'
-												: glyphOutlineError || 'No vector outline â€” showing the filled glyph.'}
+												: glyphOutlineError ||
+													'No vector outline â€” showing the filled glyph.'}
 										</p>
 									{/if}
 								</div>
@@ -1112,7 +1217,9 @@
 									<dt>Coverage</dt>
 									<dd>
 										{formatInteger(faceInspection.properties.glyphCount)} glyphs ·
-										{formatInteger(faceInspection.properties.unicodeCodepointCount)} characters
+										{formatInteger(
+											faceInspection.properties.unicodeCodepointCount
+										)} characters
 									</dd>
 								</div>
 								<div>
@@ -1133,18 +1240,27 @@
 								</div>
 								<div>
 									<dt>Face traits</dt>
-									<dd>{faceInspection.properties.traits.join(' · ') || 'None reported'}</dd>
+									<dd>
+										{faceInspection.properties.traits.join(' · ') ||
+											'None reported'}
+									</dd>
 								</div>
 								{#if faceInspection.properties.italicAngle !== 0}
 									<div>
 										<dt>Italic angle</dt>
-										<dd>{formatAxisValue(faceInspection.properties.italicAngle)}°</dd>
+										<dd>
+											{formatAxisValue(
+												faceInspection.properties.italicAngle
+											)}°
+										</dd>
 									</div>
 								{/if}
 								<div>
 									<dt>Embedding</dt>
 									<dd>
-										{embeddingLabel(faceInspection.properties.embedding.permissions)} ·
+										{embeddingLabel(
+											faceInspection.properties.embedding.permissions
+										)} ·
 										{faceInspection.properties.embedding.subsettingAllowed
 											? 'subsetting allowed'
 											: 'no subsetting'}
@@ -1153,8 +1269,14 @@
 							</dl>
 
 							<dl class="metric-summary" aria-label="Selected face metrics">
-								<div><dt>UPM</dt><dd>{faceInspection.metrics.unitsPerEm}</dd></div>
-								<div><dt>Ascender</dt><dd>{faceInspection.metrics.ascender}</dd></div>
+								<div>
+									<dt>UPM</dt>
+									<dd>{faceInspection.metrics.unitsPerEm}</dd>
+								</div>
+								<div>
+									<dt>Ascender</dt>
+									<dd>{faceInspection.metrics.ascender}</dd>
+								</div>
 								<div>
 									<dt>Cap height</dt>
 									<dd>{faceInspection.metrics.capitalHeight ?? '—'}</dd>
@@ -1163,8 +1285,14 @@
 									<dt>X-height</dt>
 									<dd>{faceInspection.metrics.xHeight ?? '—'}</dd>
 								</div>
-								<div><dt>Descender</dt><dd>{faceInspection.metrics.descender}</dd></div>
-								<div><dt>Line gap</dt><dd>{faceInspection.metrics.lineGap}</dd></div>
+								<div>
+									<dt>Descender</dt>
+									<dd>{faceInspection.metrics.descender}</dd>
+								</div>
+								<div>
+									<dt>Line gap</dt>
+									<dd>{faceInspection.metrics.lineGap}</dd>
+								</div>
 							</dl>
 
 							{#if faceInspection.variationAxes.length}
@@ -1174,8 +1302,14 @@
 										{#each faceInspection.variationAxes as axis (axis.tag)}
 											<li>
 												<strong>{axis.tag}</strong>
-												<span>{formatAxisValue(axis.minimum)} — {formatAxisValue(axis.maximum)}</span>
-												<small>default {formatAxisValue(axis.default)}</small>
+												<span
+													>{formatAxisValue(axis.minimum)} — {formatAxisValue(
+														axis.maximum
+													)}</span
+												>
+												<small
+													>default {formatAxisValue(axis.default)}</small
+												>
 											</li>
 										{/each}
 									</ul>
@@ -1185,15 +1319,24 @@
 							{#if faceInspection.names.manufacturer || faceInspection.names.designer || faceInspection.names.license}
 								<dl class="credits-summary">
 									{#if faceInspection.names.manufacturer}
-										<div><dt>Manufacturer</dt><dd>{faceInspection.names.manufacturer}</dd></div>
+										<div>
+											<dt>Manufacturer</dt>
+											<dd>{faceInspection.names.manufacturer}</dd>
+										</div>
 									{/if}
 									{#if faceInspection.names.designer}
-										<div><dt>Designer</dt><dd>{faceInspection.names.designer}</dd></div>
+										<div>
+											<dt>Designer</dt>
+											<dd>{faceInspection.names.designer}</dd>
+										</div>
 									{/if}
 									{#if faceInspection.names.license}
 										<div>
 											<dt>License</dt>
-											<dd class="license-copy" title={faceInspection.names.license}>
+											<dd
+												class="license-copy"
+												title={faceInspection.names.license}
+											>
 												{faceInspection.names.license}
 											</dd>
 										</div>
@@ -1201,7 +1344,9 @@
 								</dl>
 							{/if}
 						{:else}
-							<p class="details-error">Select a face to inspect its parsed details.</p>
+							<p class="details-error">
+								Select a face to inspect its parsed details.
+							</p>
 						{/if}
 					</div>
 
@@ -1221,9 +1366,9 @@
 								<span role="cell" class="face-style">
 									{face.styleName || weightName(face.weight)}
 									{#if face.style === 'italic'}<em>Italic</em>{/if}
-									{#if selectedFace?.id === face.id}<small class="selected-face-label"
-										>Selected</small
-									>{/if}
+									{#if selectedFace?.id === face.id}<small
+											class="selected-face-label">Selected</small
+										>{/if}
 								</span>
 								<span role="cell" class="face-weight">{face.weight}</span>
 								<span role="cell" class="face-file" title={face.fileName}

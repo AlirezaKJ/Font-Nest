@@ -10,6 +10,7 @@
 	import AppNavigation, { type AppView } from '$lib/components/AppNavigation.svelte';
 	import AppTitleBar from '$lib/components/AppTitleBar.svelte';
 	import ConflictsView from '$lib/components/ConflictsView.svelte';
+	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import LocalFontPreview from '$lib/components/LocalFontPreview.svelte';
 	import DiscoverFilterMenu, {
 		type DiscoverFilterOption
@@ -23,11 +24,18 @@
 		type ThemePreference
 	} from '$lib/components/SettingsView.svelte';
 	import { createBrowserCatalogue } from '$lib/catalogue/browser-catalogue';
+	import { contextMenu } from '$lib/context-menu/action';
+	import { writeClipboardText } from '$lib/context-menu/clipboard';
+	import {
+		faceContextMenu,
+		familyContextMenu,
+		glyphContextMenu
+	} from '$lib/context-menu/entries';
 	import { importLocalFontPreview } from '$lib/fonts/local-fonts';
 	import { hasUnseenRelease } from '$lib/release-notes/loader';
 	import { reorderIds, type ReorderPosition } from '$lib/reorder';
 	import { isStickySurfaceElevated } from '$lib/sticky-surface';
-	import { scanInstalledFonts } from '$lib/tauri/commands';
+	import { fontFaceFilePath, revealFontFaceFile, scanInstalledFonts } from '$lib/tauri/commands';
 
 	const PAGE_SIZE = 120;
 	const SKELETON_ROWS = [0, 1, 2, 3];
@@ -108,6 +116,7 @@
 	let previewSize = $state(64);
 	let previewWeight = $state(400);
 	let theme = $state<ThemePreference>('dark');
+	let resolvedTheme = $state<'light' | 'dark'>('dark');
 	let density = $state<DensityPreference>('comfortable');
 	let focusOutlines = $state(false);
 	let sidebarCollapsed = $state(false);
@@ -337,6 +346,7 @@
 				: theme;
 		document.documentElement.dataset.theme = resolved;
 		document.documentElement.style.colorScheme = resolved;
+		resolvedTheme = resolved;
 	}
 
 	function revealWindow() {
@@ -598,6 +608,83 @@
 		}
 	}
 
+	function copyValue(label: string, value: string) {
+		void writeClipboardText(value).then((copied) => {
+			if (copied) showToast(`${label} copied.`, 'success');
+			else showToast('FontNest could not reach the clipboard.', 'error');
+		});
+	}
+
+	// Font files are reachable only through the backend: the web view holds an opaque face
+	// ID, and the Rust side is what turns it back into a path.
+	async function revealFaceFile(faceId: string) {
+		try {
+			// Windows presents its own font directory as a control panel rather than a
+			// folder, and files inside it cannot be selected, so system fonts open the
+			// folder instead. Say so rather than leaving the user hunting for a highlight.
+			if (!(await revealFontFaceFile(faceId))) {
+				showToast(
+					'Windows does not allow selecting files inside its Fonts folder, so FontNest opened the folder itself.',
+					'success'
+				);
+			}
+		} catch (error) {
+			showToast(commandErrorMessage(error), 'error');
+		}
+	}
+
+	async function copyFaceFilePath(faceId: string) {
+		try {
+			copyValue('File path', await fontFaceFilePath(faceId));
+		} catch (error) {
+			showToast(commandErrorMessage(error), 'error');
+		}
+	}
+
+	function familyMenu(family: FontFamilySummary) {
+		const firstFaceId = family.faces[0]?.id;
+		return familyContextMenu({
+			family,
+			expanded: selectedFamilyId === family.id,
+			pinned: pinnedFamilyIds.includes(family.id),
+			native: catalogueMode === 'native',
+			onToggleExpanded: () => toggleFamily(family.id),
+			onOpenPreview: () => openFamilyPreview(family.id),
+			onClosePreview: () => closeFamilyPreview(family.id),
+			onReviewConflict: () => reviewConflict(family.id),
+			onUseAsPreviewText: () => {
+				setPreviewText(family.name);
+				specimenMode = 'custom';
+				showToast('Preview text updated.', 'success');
+			},
+			onRevealFile: () => firstFaceId && void revealFaceFile(firstFaceId),
+			onCopyFilePath: () => firstFaceId && void copyFaceFilePath(firstFaceId),
+			onCopy: copyValue
+		});
+	}
+
+	function faceMenu(family: FontFamilySummary, face: FontFamilySummary['faces'][number]) {
+		return faceContextMenu({
+			familyName: family.name,
+			face,
+			native: catalogueMode === 'native',
+			onRevealFile: () => void revealFaceFile(face.id),
+			onCopyFilePath: () => void copyFaceFilePath(face.id),
+			onCopy: copyValue
+		});
+	}
+
+	function glyphMenu(glyph: string) {
+		return glyphContextMenu({
+			codepoint: glyph.codePointAt(0) ?? 0,
+			onAppendToPreviewText: () => {
+				setPreviewText(`${previewText}${glyph}`);
+				specimenMode = 'custom';
+			},
+			onCopy: copyValue
+		});
+	}
+
 	function showToast(message: string, tone: Toast['tone']) {
 		if (toastTimer) clearTimeout(toastTimer);
 		toast = { message, tone };
@@ -651,6 +738,7 @@
 		onReorderPreview={reorderPinnedFamily}
 		onToggle={toggleSidebar}
 		onRefresh={() => void refreshCatalogue()}
+		onCopy={copyValue}
 	/>
 
 	<main id="main-content">
@@ -880,6 +968,7 @@
 						<div class="specimen-list" aria-label="Font families">
 							{#each renderedFamilies as family, index (family.id)}
 								<article
+									use:contextMenu={() => familyMenu(family)}
 									class:selected={selectedFamilyId === family.id}
 									class="specimen-entry"
 								>
@@ -975,7 +1064,10 @@
 
 											<ul class="face-list">
 												{#each family.faces.slice(0, MAX_DETAIL_FACES) as face (face.id)}
-													<li>
+													<li
+														use:contextMenu={() =>
+															faceMenu(family, face)}
+													>
 														<span class="face-meta">
 															<strong>{face.styleName}</strong>
 															<small>{face.fileName}</small>
@@ -1004,6 +1096,7 @@
 													style={`font-family: ${safeFontStack(family.name)}`}
 												>
 													{#each GLYPH_SAMPLE as glyph (glyph)}<span
+															use:contextMenu={() => glyphMenu(glyph)}
 															>{glyph}</span
 														>{/each}
 												</div>
@@ -1047,11 +1140,15 @@
 				{previewSize}
 				{previewWeight}
 				pinned={selectedFamily ? pinnedFamilyIds.includes(selectedFamily.id) : false}
+				native={catalogueMode === 'native'}
 				onBack={() => (view = 'library')}
 				onTogglePinned={toggleSelectedFamilyPinned}
 				onPreviewText={setPreviewText}
 				onPreviewSize={(value) => (previewSize = value)}
 				onPreviewWeight={(value) => (previewWeight = value)}
+				onCopy={copyValue}
+				onRevealFile={(faceId) => void revealFaceFile(faceId)}
+				onCopyFilePath={(faceId) => void copyFaceFilePath(faceId)}
 			/>
 		{:else if view === 'whatsNew'}
 			<PatchNotesView />
@@ -1070,6 +1167,18 @@
 		{/if}
 	</main>
 </div>
+
+<ContextMenu
+	{resolvedTheme}
+	{sidebarCollapsed}
+	onToast={showToast}
+	onRefresh={() => void refreshCatalogue()}
+	onToggleTheme={toggleTheme}
+	onToggleSidebar={toggleSidebar}
+	onNavigate={navigate}
+	onSearch={updateGlobalSearch}
+	onPreviewText={setPreviewText}
+/>
 
 {#if toast}
 	<div class:error={toast.tone === 'error'} class="toast" role="status" aria-live="polite">

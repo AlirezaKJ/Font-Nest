@@ -5,6 +5,8 @@
 </script>
 
 <script lang="ts">
+	import { contextMenu } from '$lib/context-menu/action';
+	import { savedPreviewContextMenu } from '$lib/context-menu/entries';
 	import { getDirectionalReorderPosition, type ReorderPosition } from '$lib/reorder';
 
 	import Icon, { type IconName } from './Icon.svelte';
@@ -23,7 +25,8 @@
 		onClosePreview,
 		onReorderPreview,
 		onToggle,
-		onRefresh
+		onRefresh,
+		onCopy
 	}: {
 		view: AppView;
 		familyCount: number;
@@ -43,7 +46,18 @@
 		) => void;
 		onToggle: () => void;
 		onRefresh: () => void;
+		onCopy: (label: string, value: string) => void;
 	} = $props();
+
+	function savedPreviewMenu(family: PinnedFamily) {
+		return savedPreviewContextMenu({
+			familyName: family.name,
+			active: view === 'preview' && activeFamilyId === family.id,
+			onOpen: () => onOpenPreview(family.id),
+			onClose: () => onClosePreview(family.id),
+			onCopy: onCopy
+		});
+	}
 
 	let draggedFamilyId = $state<string | null>(null);
 	let dropTarget = $state<{ familyId: string; position: ReorderPosition } | null>(null);
@@ -344,6 +358,7 @@
 				<div class="nav-divider" aria-hidden="true"></div>
 				{#each pinnedFamilies as family (family.id)}
 					<div
+						use:contextMenu={() => savedPreviewMenu(family)}
 						class:active={view === 'preview' && activeFamilyId === family.id}
 						class:dragging={draggedFamilyId === family.id}
 						class:drop-before={dropTarget?.familyId === family.id &&

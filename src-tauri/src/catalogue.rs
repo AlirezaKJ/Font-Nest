@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use fontdb::{Database, FaceInfo, ID, Source, Style};
@@ -27,6 +27,8 @@ pub enum CatalogueInspectionError {
     UnknownFace,
     #[error("the font data could not be loaded")]
     DataUnavailable,
+    #[error("the requested face is not backed by a file on disk")]
+    NotFileBacked,
     #[error(transparent)]
     Parser(#[from] FontInspectionError),
 }
@@ -59,6 +61,27 @@ impl FontCatalogueStore {
         self.with_face_data(face_id, |data, index| {
             font_inspection::inspect_glyph_outline(face_id, data, index, codepoint, variations)
         })
+    }
+
+    /// Resolves an opaque face ID back to the file it was scanned from.
+    ///
+    /// Face IDs are one-way digests, so this lookup is the only way back to a path and it
+    /// stays behind the command layer: callers decide whether the path is revealed to the
+    /// user or handed to the platform file manager.
+    pub fn face_file_path(&self, face_id: &str) -> Result<PathBuf, CatalogueInspectionError> {
+        let database_id = self
+            .faces
+            .get(face_id)
+            .copied()
+            .ok_or(CatalogueInspectionError::UnknownFace)?;
+        let face = self
+            .database
+            .face(database_id)
+            .ok_or(CatalogueInspectionError::UnknownFace)?;
+        match &face.source {
+            Source::File(path) => Ok(path.clone()),
+            _ => Err(CatalogueInspectionError::NotFileBacked),
+        }
     }
 
     fn with_face_data<T>(

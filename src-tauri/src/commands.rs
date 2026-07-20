@@ -11,6 +11,7 @@ use crate::dto::{
     InstallGoogleFontRequest, ValidatedLocalFont,
 };
 use crate::font_inspection::FontInspectionError;
+use crate::font_platform;
 use crate::google_fonts::{self, GoogleFontsError};
 use crate::local_fonts::{self, LocalFontError};
 use crate::release_notes::{self, ReleaseNotesError};
@@ -58,6 +59,19 @@ impl CatalogueState {
             .ok_or_else(CommandError::catalogue_unavailable)?;
         store
             .export_face_json(face_id)
+            .map_err(|error| map_catalogue_inspection_error(&error))
+    }
+
+    fn face_file_path(&self, face_id: &str) -> Result<std::path::PathBuf, CommandError> {
+        let current = self
+            .store
+            .lock()
+            .map_err(|_| CommandError::catalogue_unavailable())?;
+        let store = current
+            .as_ref()
+            .ok_or_else(CommandError::catalogue_unavailable)?;
+        store
+            .face_file_path(face_id)
             .map_err(|error| map_catalogue_inspection_error(&error))
     }
 
@@ -145,6 +159,57 @@ pub async fn inspect_font_glyph_outline(
     })
     .await
     .map_err(|_| CommandError::font_parser_unavailable())?
+}
+
+/// Returns the on-disk path a scanned face came from.
+///
+/// Catalogue summaries deliberately carry only a sanitized file name, so this is the one
+/// place a real path crosses into the web view. It is reached from an explicit "Copy file
+/// path" action, never as part of a routine scan.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn font_face_file_path(
+    face_id: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<String, CommandError> {
+    ensure_trusted_window(&window)?;
+    validate_face_id(&face_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<CatalogueState>()
+            .face_file_path(&face_id)
+            .map(|path| path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|_| CommandError::font_file_unavailable())?
+}
+
+/// Opens the platform file manager with the scanned face's file selected.
+///
+/// The path is resolved from the opaque face ID inside the backend and never leaves it.
+/// Returns `true` when the file itself could be highlighted; system fonts live in a shell
+/// namespace folder whose files are not selectable, so those open the folder and return
+/// `false` for the caller to explain.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn reveal_font_face_file(
+    face_id: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<bool, CommandError> {
+    ensure_trusted_window(&window)?;
+    validate_face_id(&face_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = app.state::<CatalogueState>().face_file_path(&face_id)?;
+        font_platform::reveal_in_file_manager(&path)
+            .map(|outcome| outcome == font_platform::RevealOutcome::Selected)
+            .map_err(|error| {
+                log::error!("Revealing a font file in the file manager failed: {error}");
+                CommandError::font_file_reveal_failed()
+            })
+    })
+    .await
+    .map_err(|_| CommandError::font_file_reveal_failed())?
 }
 
 #[tauri::command]
@@ -402,6 +467,7 @@ fn map_catalogue_inspection_error(error: &CatalogueInspectionError) -> CommandEr
         CatalogueInspectionError::UnknownFace | CatalogueInspectionError::DataUnavailable => {
             CommandError::font_face_unavailable()
         }
+        CatalogueInspectionError::NotFileBacked => CommandError::font_file_unavailable(),
         CatalogueInspectionError::Parser(
             FontInspectionError::InvalidCodepoint | FontInspectionError::MissingGlyph,
         ) => CommandError::font_glyph_unavailable(),

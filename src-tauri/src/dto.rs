@@ -423,6 +423,20 @@ impl CommandError {
         }
     }
 
+    pub const fn font_file_unavailable() -> Self {
+        Self {
+            code: "font_file_unavailable",
+            message: "That font is not stored as a file FontNest can open.",
+        }
+    }
+
+    pub const fn font_file_reveal_failed() -> Self {
+        Self {
+            code: "font_file_reveal_failed",
+            message: "FontNest could not open that font in your file manager.",
+        }
+    }
+
     pub const fn font_parser_unavailable() -> Self {
         Self {
             code: "font_parser_unavailable",

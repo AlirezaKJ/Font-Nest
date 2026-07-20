@@ -5,8 +5,11 @@
 		| 'check'
 		| 'chevron'
 		| 'close'
+		| 'copy'
+		| 'cut'
 		| 'duplicates'
 		| 'filter'
+		| 'folder'
 		| 'font'
 		| 'library'
 		| 'maximize'
@@ -14,9 +17,11 @@
 		| 'moon'
 		| 'monitor'
 		| 'more'
+		| 'paste'
 		| 'refresh'
 		| 'restore'
 		| 'search'
+		| 'select-all'
 		| 'settings'
 		| 'sidebar'
 		| 'sparkle'
@@ -101,6 +106,27 @@
 	{:else if name === 'sidebar'}
 		<rect x="4" y="5" width="16" height="14" rx="2" />
 		<path d="M9.5 5v14" />
+	{:else if name === 'copy'}
+		<rect x="9" y="9" width="10.5" height="10.5" rx="2" />
+		<path d="M15 6.5A2 2 0 0 0 13 4.5H6.5a2 2 0 0 0-2 2V13a2 2 0 0 0 2 2" />
+	{:else if name === 'folder'}
+		<path
+			d="M4.5 7.25A1.75 1.75 0 0 1 6.25 5.5h3.1l1.8 2.25h6.6a1.75 1.75 0 0 1 1.75 1.75v7A1.75 1.75 0 0 1 17.75 18.5H6.25A1.75 1.75 0 0 1 4.5 16.75Z"
+		/>
+	{:else if name === 'cut'}
+		<circle cx="7" cy="17" r="2.5" />
+		<circle cx="17" cy="17" r="2.5" />
+		<path d="M8.6 15.1 17 4.5M15.4 15.1 7 4.5" />
+	{:else if name === 'paste'}
+		<path
+			d="M9.5 5.5H7.75A1.75 1.75 0 0 0 6 7.25v10.5a1.75 1.75 0 0 0 1.75 1.75h8.5A1.75 1.75 0 0 0 18 17.75V7.25A1.75 1.75 0 0 0 16.25 5.5H14.5"
+		/>
+		<rect x="9.5" y="3.75" width="5" height="3.5" rx="1.25" />
+	{:else if name === 'select-all'}
+		<path
+			d="M5 8.5v-2a1.5 1.5 0 0 1 1.5-1.5h2M15.5 5h2A1.5 1.5 0 0 1 19 6.5v2M19 15.5v2a1.5 1.5 0 0 1-1.5 1.5h-2M8.5 19h-2A1.5 1.5 0 0 1 5 17.5v-2"
+		/>
+		<path d="M9 12h6" />
 	{:else if name === 'sparkle'}
 		<path
 			d="M12 4.5c.35 3.4 2.1 5.15 5.5 5.5-3.4.35-5.15 2.1-5.5 5.5-.35-3.4-2.1-5.15-5.5-5.5 3.4-.35 5.15-2.1 5.5-5.5Z"

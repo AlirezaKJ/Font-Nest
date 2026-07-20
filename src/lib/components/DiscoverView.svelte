@@ -5,6 +5,9 @@
 	import type { GoogleFontFamilyDetails } from '$lib/bindings/GoogleFontFamilyDetails';
 	import type { GoogleFontFamilySummary } from '$lib/bindings/GoogleFontFamilySummary';
 	import type { GoogleFontPage } from '$lib/bindings/GoogleFontPage';
+	import { contextMenu } from '$lib/context-menu/action';
+	import { writeClipboardText } from '$lib/context-menu/clipboard';
+	import { discoverFamilyContextMenu } from '$lib/context-menu/entries';
 	import { KeyedTaskQueue, pickPreviewEvictionCandidate } from '$lib/discover/preview-queue';
 	import { activateInstalledGoogleFont } from '$lib/fonts/session-fonts';
 	import { isStickySurfaceElevated } from '$lib/sticky-surface';
@@ -615,6 +618,29 @@
 		return options.find((option) => option.value === value)?.label ?? value;
 	}
 
+	function copyValue(label: string, value: string) {
+		void writeClipboardText(value).then((copied) => {
+			if (copied) onToast(`${label} copied.`, 'success');
+			else onToast('FontNest could not reach the clipboard.', 'error');
+		});
+	}
+
+	function familyMenu(family: GoogleFontFamilySummary) {
+		return discoverFamilyContextMenu({
+			familyName: family.family,
+			category: categoryLabel(family.category),
+			license: family.license,
+			installed: family.installed,
+			expanded: selectedFamilyId === family.id,
+			onToggleExpanded: () => void selectFamily(family.id),
+			onUseAsPreviewText: () => {
+				onPreviewText(family.family);
+				specimenMode = 'custom';
+			},
+			onCopy: copyValue
+		});
+	}
+
 	function categoryLabel(value: string) {
 		return optionLabel(CATEGORY_OPTIONS, value);
 	}
@@ -809,7 +835,11 @@
 		{:else}
 			<div class="specimen-list" aria-label="Google Fonts families">
 				{#each families as family (family.id)}
-					<article class:selected={selectedFamilyId === family.id} class="specimen-entry">
+					<article
+						use:contextMenu={() => familyMenu(family)}
+						class:selected={selectedFamilyId === family.id}
+						class="specimen-entry"
+					>
 						<button
 							type="button"
 							class="specimen-toggle"

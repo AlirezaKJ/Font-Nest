@@ -12,6 +12,16 @@ a bundled copy when you are offline.
 
 ### Added
 
+- Right-click now opens a FontNest menu instead of the browser one, and it changes depending on
+  what you clicked. On a family: open it, save it to previews, review a conflict, copy the name or
+  a ready-to-paste CSS font stack, or show the file in your file manager. On a single style: copy
+  the PostScript name, the style, the file name, or a full CSS declaration. On a character: copy
+  the character, its codepoint, an HTML entity, or a CSS escape, or drop it into your preview text.
+  Right-clicking selected text offers to copy it, use it as your preview text, or search your
+  library for it, and text fields get proper Cut, Copy, Paste, Select all, and Clear. Right-click
+  anywhere else for rescan, theme, sidebar, and the main views. The menu works from the keyboard
+  too, with the Menu key or Shift+F10, then arrows and typing to pick an item. The highlight
+  slides between items the same way the sidebar's does.
 - A Focus outlines setting under Settings > Accessibility. Turn it on to draw a visible outline
   around whatever has keyboard focus (the editable preview text, search, buttons, and controls),
   which helps if you navigate with the keyboard. It is off by default.
@@ -24,6 +34,12 @@ a bundled copy when you are offline.
 
 ### Fixed
 
+- Show in file manager no longer dumps you in a random folder for fonts that came with Windows.
+  Windows presents its own font folder as a control panel rather than a directory, and the files
+  inside it cannot be picked out individually, so Explorer was quietly giving up and opening
+  whatever folder it happened to default to. FontNest now opens the Windows Fonts folder itself
+  and tells you why it could not highlight the file. Fonts you installed yourself are still
+  selected directly, and font files whose names contain spaces or commas now work too.
 - The window now appears as soon as it has finished painting instead of hanging back for a few
   seconds. It was missing a permission it needed to show itself, so it was falling through to a
   delayed safety net.

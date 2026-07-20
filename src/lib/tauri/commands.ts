@@ -37,6 +37,15 @@ export function exportFontFaceParserJson(faceId: string): Promise<FontParserJson
 	return invoke<FontParserJsonExport>('export_font_face_parser_json', { faceId });
 }
 
+export function fontFaceFilePath(faceId: string): Promise<string> {
+	return invoke<string>('font_face_file_path', { faceId });
+}
+
+/** Resolves to false when only the containing folder could be opened. */
+export function revealFontFaceFile(faceId: string): Promise<boolean> {
+	return invoke<boolean>('reveal_font_face_file', { faceId });
+}
+
 export function validateFontFile(path: string): Promise<ValidatedLocalFont> {
 	return invoke<ValidatedLocalFont>('validate_font_file', { path });
 }

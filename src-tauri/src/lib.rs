@@ -98,6 +98,8 @@ pub fn run() {
             commands::inspect_font_face,
             commands::inspect_font_glyph_outline,
             commands::export_font_face_parser_json,
+            commands::font_face_file_path,
+            commands::reveal_font_face_file,
             commands::validate_font_file,
             commands::list_google_fonts,
             commands::get_google_font_details,

@@ -62,6 +62,133 @@ pub fn validate_font(bytes: &[u8]) -> Result<ValidatedFontMetadata, FontPlatform
     Ok(ValidatedFontMetadata { full_name })
 }
 
+/// How much of the request the file manager could honour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevealOutcome {
+    /// The file manager opened with the font file itself highlighted.
+    Selected,
+    /// Only the containing folder could be opened. See [`reveal_in_file_manager`].
+    FolderOnly,
+}
+
+/// Opens the platform file manager with `path` selected.
+///
+/// The path always originates from the catalogue scan, never from the web view, so no
+/// caller-supplied string reaches a shell. Every argument is passed as a separate process
+/// argument rather than through a shell command line.
+///
+/// Selecting the file is not always possible. Windows presents `C:\Windows\Fonts` as the
+/// Fonts control panel rather than a directory, and the files inside it are not addressable
+/// as shell items at all, so system fonts fall back to opening the folder.
+pub fn reveal_in_file_manager(path: &Path) -> Result<RevealOutcome, FontPlatformError> {
+    if !path.is_file() {
+        return Err(FontPlatformError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "the font file is no longer on disk",
+        )));
+    }
+
+    #[cfg(windows)]
+    {
+        reveal_on_windows(path)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn()
+            .map(|_| RevealOutcome::Selected)
+            .map_err(FontPlatformError::Io)
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        open_containing_folder(path).map(|()| RevealOutcome::FolderOnly)
+    }
+}
+
+/// Reveals `path` through the shell rather than through `explorer.exe /select,`.
+///
+/// `explorer.exe` parses its own command line and mangles `/select,` arguments containing
+/// spaces or commas; worse, when the argument names something the shell cannot resolve it
+/// silently opens the user's default folder instead of reporting an error. Going through
+/// `SHOpenFolderAndSelectItems` avoids both problems and lets an unresolvable item be
+/// detected up front, which is what the system font directory produces.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn reveal_on_windows(path: &Path) -> Result<RevealOutcome, FontPlatformError> {
+    use windows_sys::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize,
+    };
+    use windows_sys::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+
+    let wide = wide_path(path);
+
+    // windows-sys types the COINIT constants as i32 but the parameter as u32. The constant
+    // is a small positive flag, so widening it loses nothing.
+    #[allow(clippy::cast_sign_loss)]
+    let apartment_threaded = COINIT_APARTMENTTHREADED as u32;
+
+    // The shell APIs below need an initialized apartment on the calling thread, and without
+    // one ILCreateFromPathW skips the namespace lookup entirely and returns a PIDL for paths
+    // that have no shell item. This runs on a dedicated blocking worker, so the apartment is
+    // ours to manage.
+    // SAFETY: CoUninitialize below is paired with a successful CoInitializeEx only.
+    let initialized = unsafe { CoInitializeEx(std::ptr::null(), apartment_threaded) } >= 0;
+
+    // SAFETY: `wide` is a live, null-terminated UTF-16 buffer. ILCreateFromPathW returns
+    // either null or a PIDL owned by the caller, which is freed on every path below before
+    // the buffer goes out of scope.
+    let item = unsafe { ILCreateFromPathW(wide.as_ptr()) };
+
+    let outcome = if item.is_null() {
+        // The path is inside a shell namespace folder that does not expose its files, so
+        // no item PIDL exists to select. The folder itself still resolves.
+        open_containing_folder(path).map(|()| RevealOutcome::FolderOnly)
+    } else {
+        // SAFETY: `item` is a valid PIDL. Passing it as the folder with a count of zero is
+        // the documented way to ask the shell to open its parent and select it.
+        let result = unsafe { SHOpenFolderAndSelectItems(item, 0, std::ptr::null(), 0) };
+        // SAFETY: `item` came from ILCreateFromPathW and is freed exactly once.
+        unsafe { ILFree(item) };
+
+        if result >= 0 {
+            Ok(RevealOutcome::Selected)
+        } else {
+            open_containing_folder(path).map(|()| RevealOutcome::FolderOnly)
+        }
+    };
+
+    if initialized {
+        // SAFETY: Balances the CoInitializeEx above on the same thread.
+        unsafe { CoUninitialize() };
+    }
+
+    outcome
+}
+
+/// Opens the directory holding `path`, without selecting anything inside it.
+fn open_containing_folder(path: &Path) -> Result<(), FontPlatformError> {
+    let directory = path.parent().unwrap_or(path);
+
+    #[cfg(windows)]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+
+    // explorer.exe exits with a non-zero status even when the window opens, so the status
+    // is deliberately not checked; only a failure to spawn is an error.
+    command
+        .arg(directory)
+        .spawn()
+        .map(|_| ())
+        .map_err(FontPlatformError::Io)
+}
+
 fn unicode_name(face: &Face<'_>, name_id: u16) -> Option<String> {
     face.names()
         .into_iter()
@@ -281,6 +408,70 @@ fn broadcast_font_change() {
 #[cfg(test)]
 mod tests {
     use super::{FontPlatformError, managed_file_name};
+
+    /// Pins the assumption the Windows reveal path branches on: files inside the system
+    /// font directory are not addressable as shell items, because Explorer renders that
+    /// directory as the Fonts control panel. If a future Windows release changes this,
+    /// the fallback becomes dead code and this test says so.
+    ///
+    /// The COM initialization matters. Without it `ILCreateFromPathW` does not consult the
+    /// shell namespace and happily returns a PIDL for these files, which would make the
+    /// whole check silently pass and the fallback never run.
+    #[cfg(windows)]
+    #[test]
+    #[allow(unsafe_code)]
+    fn system_font_files_are_not_shell_items_but_ordinary_files_are() {
+        use std::os::windows::ffi::OsStrExt;
+
+        use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+        use windows_sys::Win32::UI::Shell::{ILCreateFromPathW, ILFree};
+
+        fn parses(path: &std::path::Path) -> bool {
+            let wide: Vec<u16> = path
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            // SAFETY: `wide` is a live, null-terminated UTF-16 buffer, and any returned
+            // PIDL is freed before the function returns.
+            let pidl = unsafe { ILCreateFromPathW(wide.as_ptr()) };
+            if pidl.is_null() {
+                return false;
+            }
+            // SAFETY: `pidl` came from ILCreateFromPathW and is freed exactly once.
+            unsafe { ILFree(pidl) };
+            true
+        }
+
+        #[allow(clippy::cast_sign_loss)]
+        let apartment_threaded = COINIT_APARTMENTTHREADED as u32;
+        // SAFETY: Initializes COM for this test thread, matching what reveal_on_windows does
+        // on its worker thread.
+        unsafe { CoInitializeEx(std::ptr::null(), apartment_threaded) };
+
+        let system_fonts = std::path::Path::new(r"C:\Windows\Fonts");
+        let Some(system_font) = std::fs::read_dir(system_fonts)
+            .ok()
+            .and_then(|entries| entries.flatten().find(|entry| entry.path().is_file()))
+        else {
+            return; // No readable system fonts on this machine; nothing to assert.
+        };
+
+        let ordinary = tempfile::NamedTempFile::new().expect("a temporary file");
+
+        assert!(
+            parses(system_fonts),
+            "the system font directory itself must still resolve, since the fallback opens it"
+        );
+        assert!(
+            !parses(&system_font.path()),
+            "a file inside the system font directory unexpectedly resolved as a shell item"
+        );
+        assert!(
+            parses(ordinary.path()),
+            "an ordinary file must resolve, or every reveal would fall back"
+        );
+    }
 
     #[test]
     fn managed_file_names_cannot_escape_the_user_font_directory() {

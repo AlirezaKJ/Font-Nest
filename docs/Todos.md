@@ -13,7 +13,7 @@ tags:
 # FontNest — Master Todo
 
 > [!info] Purpose
-> This is the authoritative, living product and engineering roadmap for [[FontNest]]. It includes the Windows-first release path, the wider font-system feature surface, cross-platform work, and deliberately separated research ideas. It is an inventory, not a promise that every optional item belongs in the same release.
+> This is the authoritative, living product and engineering roadmap for [[FontNest]]. It includes the Windows-first release path, the wider font-system feature surface, cross-platform work, and deliberately separated research ideas. It is an inventory, not a promise that every optional item belongs in the same release. Last competitive audit: 2026-07-19 against FontBase (free and Awesome), Typeface, RightFont, FontExpert, MainType, and FontGoggles.
 
 > [!tip] Status and priority
 >
@@ -166,6 +166,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P1** Replace path-substring provenance with platform-native enumeration and protection metadata.
 - [ ] **P1** Distinguish installed, active, disabled, missing, shadowed, protected, FontNest-managed, externally managed, preview-only, provider-available, and offline states.
 - [ ] **P1** Handle Unicode normalization, case folding, long paths, non-UTF-8 paths where supported, hardlinks, symlinks, junctions/reparse points, network shares, removable media, inaccessible files, and locked files.
+- [ ] **P1** Handle cloud-placeholder files (OneDrive Files On-Demand and similar): detect dehydrated placeholders, never trigger mass hydration during a scan, and label cloud-only fonts distinctly instead of treating them as missing.
 - [ ] **P1** Add user-configurable watched folders, project folders, one-time scan roots, and exclusion rules.
 - [ ] **P1** Debounce watcher storms and reconcile rename pairs as one change.
 - [ ] **P1** Detect OS registration and font-cache changes in addition to directory changes.
@@ -247,6 +248,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P1** Add facets with result counts and match highlighting.
 - [ ] **P1** Add sorts for name, recent install/change/view, file size, glyph count, foundry, version, axes, conflict severity, and custom order.
 - [ ] **P2** Add expert metric filters for x-height, cap height, proportion/width, density, and other measurable classification traits when normalized data is available.
+- [ ] **P2** Add a consumer-grade visual classification browse (serif, sans-serif, slab, script/handwriting, monospaced, display, symbol) derived locally from PANOSE, OS/2, and post table data, with visible confidence and reversible manual correction.
 - [ ] **P2** Add recent search history, saved searches, and smart collections backed by reusable predicates.
 - [ ] **P2** Add “find fonts covering this pasted text, Unicode range, script, or language.”
 - [ ] **P2** Add a coverage-aware fallback-stack builder.
@@ -263,6 +265,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P2** Group by family, foundry, source, folder, collection, tag, script, or status.
 - [ ] **P2** Label system, protected, user, preview-only, FontNest-managed, provider-managed, shadowed, and unavailable records explicitly.
 - [ ] **P2** Add quick actions for preview, compare, favorite, collect, copy identifier, reveal, export metadata, activate, and managed uninstall.
+- [ ] **P3** Add a calm library overview: family/face counts by format, source, foundry, static/variable, color capability, and disk usage, presented as archival summary rather than a dashboard.
 - [ ] **P2** Add accessible result counts, `aria-busy`, and virtualized-list semantics without flooding screen readers.
 
 ## 7. Exact preview infrastructure and specimen workspace
@@ -294,6 +297,9 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P2** Debounce preference writes instead of persisting on every specimen keystroke.
 - [ ] **P2** Export specimen sessions as JSON and proof sheets as PNG/PDF/print.
 - [ ] **P2** Add dynamic language-aware pangrams, bidirectional samples, vertical writing, and custom specimen libraries.
+- [ ] **P2** Add classic kerning and spacing proof texts (kern-king-style pair strings and spacing samples) to the built-in specimen library.
+- [ ] **P3** Preview specimen text over a user-supplied local image backdrop for poster and photography proofing; the image never leaves the device.
+- [ ] **P3** Auto-refresh preview-only fonts when the underlying file changes on disk so type designers can iterate on work-in-progress fonts, FontGoggles-style, with every reload still crossing the Rust validation boundary.
 - [ ] **P3** Add pixel/DPI rendering tests and optional WebView-versus-native rendering comparison.
 
 ## 8. Variable fonts, OpenType features, glyphs, and color fonts
@@ -326,6 +332,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P1** Filter assigned, unassigned, private-use, combining, color, alternate, and missing glyphs.
 - [ ] **P1** Show Unicode name/sequence, glyph ID, advance, side bearings, bounds, components, anchors, and variation information.
 - [ ] **P1** Copy character, Unicode notation, HTML entity, CSS escape, UTF-8/UTF-16 values, or glyph name.
+- [ ] **P2** Export a selected glyph as SVG or PNG artwork and copy it to the clipboard, surfacing the embedding-permission and licence warning before export.
 - [ ] **P1** Add “paste text to test coverage” with an exact missing-character report.
 - [ ] **P1** Add complex-shaping specimens for Arabic, Indic scripts, combining marks, vertical text, bidirectional text, and variation selectors.
 - [ ] **P2** Add confusing-character proof sets such as `I/l/1`, `O/0`, quotes, punctuation, currencies, and diacritics.
@@ -432,11 +439,13 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P1** Add static-versus-variable guidance and warn when selected artifacts overlap.
 - [ ] **P1** Add signed catalogue delta updates so provider metadata can refresh independently of an app release.
 - [ ] **P2** Add provider favorites/wishlist, compare-to-installed, release diff, update, update-all, pin, ignore, and rollback.
+- [ ] **P2** Add multi-select batch install from Discover with one combined preflight review, shared progress, and a single outcome report.
 
 ### Additional sources
 
 - [ ] **P2** Evaluate Fontshare only after confirming a stable official catalogue/download API and complete licence metadata.
 - [ ] **P2** Evaluate Fontsource, Bunny Fonts, OFL collections, and foundry feeds as separate adapters with explicit provenance and licensing.
+- [ ] **P3** Evaluate a Nerd Fonts / patched developer-font source, and detect already-patched fonts in the local catalogue through their private-use icon ranges.
 - [ ] **P3** Support self-hosted/private read-only manifests with signature and schema validation.
 - [ ] **P3** Support local manifest import for offline organizational libraries.
 - [ ] **R&D** Consider Adobe Fonts or subscription sources only if official APIs and licences explicitly permit catalogue, preview, activation, and management; never scrape.
@@ -465,6 +474,8 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P2** Add machine-to-machine inventory comparison without copying licensed font binaries.
 - [ ] **P2** Add managed-library backup/restore with hashes, metadata, licences, and revalidation of ownership proof.
 - [ ] **P3** Add importers for metadata from Typeface, FontBase, Suitcase, or legacy FontExplorer exports when documented formats exist.
+- [ ] **P3** Add deliberate drag-out of a font file copy from the app to Explorer or a design tool; never expose raw managed paths implicitly, and warn when embedding or redistribution rights are restricted.
+- [ ] **P3** Add a work-on-copy library consolidation tool that copies loose local fonts into an organized folder tree by family or foundry; never move or delete originals without explicit consent.
 - [ ] **P3** Add portable mode for settings/catalogue metadata; keep OS registration semantics platform-specific.
 - [ ] **R&D** Add optional encrypted sync for tags, collections, notes, settings, and project manifests; never sync font binaries by default.
 
@@ -513,6 +524,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P2** Add configurable keyboard shortcuts with collision detection and visible menu/tooltip hints.
 - [ ] **P3** Evaluate detachable preview/compare windows while reusing existing Tauri windows.
 - [ ] **P3** Add launch-at-login, minimize-to-tray, and close behavior only where activation/background features justify them.
+- [ ] **P3** Add an optional global shortcut that opens a compact FontNest quick-search window for font lookup while working in another application.
 
 ### Settings and storage controls
 
@@ -576,6 +588,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P1** Add trusted “Reveal in Explorer,” “Open in Windows Font Viewer,” and “Open Fonts settings” actions resolved from opaque IDs.
 - [ ] **P1** Verify WebView2 runtime requirements, offline installation, custom title bar, Snap, high contrast, per-monitor DPI, and installer repair.
 - [ ] **P2** Add file associations and “Inspect with FontNest” Explorer integration with explicit opt-in.
+- [ ] **P2** Detect Microsoft 365 cloud fonts delivered into the user profile (the Office CloudFonts cache) alongside Store-packaged fonts, label their provenance truthfully, and treat them as externally managed.
 - [ ] **P2** Add deep links for trusted app navigation without accepting raw paths or commands.
 - [ ] **P3** Evaluate MSIX, MSI, and NSIS tradeoffs for updates, signing reputation, repair, and uninstall cleanup.
 
@@ -712,6 +725,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P1** Document backup/restore, database migration, managed uninstall, provider trust, licence warnings, and diagnostics export.
 - [ ] **P2** Add screenshots for both themes, store artwork, social/OG image, and a short demo video.
 - [ ] **P2** Add signed macOS `.dmg`/notarization and Linux AppImage/deb/rpm packages only after platform acceptance gates pass.
+- [ ] **P2** Publish through Windows package channels: a winget manifest first, then evaluate Microsoft Store, Chocolatey, and Scoop once signing and update policy are settled.
 - [ ] **P2** Add release automation for tagged, signed, reproducible artifacts with staged rollout and rollback.
 - [ ] **P2** Add optional VirusTotal links/checksums as supporting evidence, not as the sole security claim.
 - [ ] **P3** Build a restrained landing page and portfolio case study after the download/support path is ready.
@@ -724,6 +738,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P3** Add local-only similarity and pairing recommendations with visible reasons and manual controls.
 - [ ] **P3** Add accessibility-oriented recommendations for legibility, language coverage, confusing glyphs, and UI roles without claiming universal readability.
 - [ ] **P3** Add multi-window comparison and presentation/full-screen proof modes.
+- [ ] **P3** Add an optional glyph anatomy overlay that names strokes, bowls, apertures, terminals, and joins on an enlarged specimen for evaluation and teaching.
 - [ ] **P3** Add LAN/private-library inventory browsing without copying binaries by default.
 - [ ] **R&D** Identify a font from an image using an opt-in local model; keep uploaded imagery and font files off remote services by default.
 - [ ] **R&D** Add opt-in AI pairing or specimen suggestions only when recommendations are explainable and no font bytes/private text leave the device without consent.
@@ -826,3 +841,6 @@ These references define capabilities and terminology; they do not override FontN
 - [Typeface feature documentation](https://typefaceapp.com/help/articles)
 - [RightFont documentation](https://rightfontapp.com/docs)
 - [FontBase feature overview](https://fontba.se/)
+- [FontGoggles shaping and variation previewer](https://fontgoggles.org/)
+- [MainType font manager](https://www.high-logic.com/font-manager/maintype)
+- [FontExpert font manager](https://www.proximasoftware.com/fontexpert/)
