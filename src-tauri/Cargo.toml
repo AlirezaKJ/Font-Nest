@@ -1,6 +1,6 @@
 [package]
 name = "fontnest"
-version = "0.1.2"
+version = "0.1.3"
 description = "A lightweight desktop font manager"
 authors = ["FontNest contributors"]
 license = "Apache-2.0"
