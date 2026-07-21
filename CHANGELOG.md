@@ -10,6 +10,8 @@ a bundled copy when you are offline.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-21
+
 ### Added
 
 - Right-click now opens a FontNest menu instead of the browser one, and it changes depending on
@@ -119,7 +121,8 @@ on your computer.
   it has verified the signature.
 - Apache-2.0 license.
 
-[Unreleased]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/AlirezaKJ/Font-Nest/releases/tag/v0.1.0
