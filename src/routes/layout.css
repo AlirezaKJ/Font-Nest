@@ -232,6 +232,81 @@ input[type='range'] {
 	-webkit-tap-highlight-color: transparent;
 }
 
+/* Base skin for every range input in the app. RangeSlider.svelte layers the filled part of
+   the track on top of this; sliders that use the raw element still get the same thumb and
+   track instead of whatever the web view draws by default. */
+input[type='range'] {
+	height: 18px;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	appearance: none;
+	cursor: pointer;
+}
+
+input[type='range']::-webkit-slider-runnable-track {
+	height: 6px;
+	border-radius: 999px;
+	background: var(--color-border);
+}
+
+input[type='range']::-webkit-slider-thumb {
+	width: 14px;
+	height: 14px;
+	margin-top: -4px;
+	border: 2px solid var(--color-control);
+	border-radius: 50%;
+	background: var(--color-accent);
+	box-shadow: 0 1px 3px rgb(0 0 0 / 26%);
+	appearance: none;
+	transition:
+		transform 130ms ease,
+		background-color 130ms ease;
+}
+
+input[type='range']:hover::-webkit-slider-thumb {
+	background: var(--color-accent-hover);
+	transform: scale(1.14);
+}
+
+input[type='range']:disabled::-webkit-slider-thumb {
+	background: var(--color-subtle);
+	box-shadow: none;
+	transform: none;
+}
+
+input[type='range']::-moz-range-track {
+	height: 6px;
+	border-radius: 999px;
+	background: var(--color-border);
+}
+
+input[type='range']::-moz-range-progress {
+	height: 6px;
+	border-radius: 999px;
+	background: var(--color-accent);
+}
+
+input[type='range']::-moz-range-thumb {
+	width: 14px;
+	height: 14px;
+	border: 2px solid var(--color-control);
+	border-radius: 50%;
+	background: var(--color-accent);
+	box-shadow: 0 1px 3px rgb(0 0 0 / 26%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	input[type='range']::-webkit-slider-thumb {
+		transition: none;
+	}
+
+	input[type='range']:hover::-webkit-slider-thumb {
+		transform: none;
+	}
+}
+
 :where(button, input, select, textarea, summary, a):focus-visible {
 	outline: 2px solid var(--focus-ring);
 	outline-offset: 2px;

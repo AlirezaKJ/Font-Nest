@@ -39,6 +39,22 @@ impl Greeting {
     }
 }
 
+/// Where a font came from, ordered from the fonts the operating system owns to the ones
+/// somebody added. Ordering matters: it decides how a family lists mixed origins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub enum FontOrigin {
+    /// Shipped with the operating system.
+    SystemDefault,
+    /// Installed for everyone on this computer.
+    MachineInstalled,
+    /// Installed for the current user only.
+    UserInstalled,
+    /// Loaded from somewhere `FontNest` cannot attribute.
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/bindings/")]
@@ -49,10 +65,12 @@ pub struct FontFaceSummary {
     pub style: String,
     pub weight: u16,
     pub format: String,
-    pub source: String,
+    pub origin: FontOrigin,
     pub file_name: String,
     pub face_index: u32,
     pub monospaced: bool,
+    /// Carries variation axes, so one file covers a range of weights or widths.
+    pub variable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
@@ -218,8 +236,10 @@ pub struct FontFamilySummary {
     pub styles: Vec<String>,
     pub weights: Vec<u16>,
     pub formats: Vec<String>,
-    pub sources: Vec<String>,
+    pub origins: Vec<FontOrigin>,
     pub monospaced: bool,
+    /// True when any face in the family carries variation axes.
+    pub variable: bool,
     pub has_conflict: bool,
     pub faces: Vec<FontFaceSummary>,
 }

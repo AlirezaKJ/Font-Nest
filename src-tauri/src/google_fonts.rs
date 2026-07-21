@@ -90,6 +90,13 @@ struct GoogleFontFamily {
     license_size_bytes: u64,
     last_modified: String,
     version: String,
+    /// Rank in the Google Fonts popularity ordering at snapshot time; absent for families the
+    /// upstream API did not rank.
+    #[serde(default)]
+    popularity_rank: Option<u32>,
+    /// Rank in the Google Fonts trending ordering at snapshot time.
+    #[serde(default)]
+    trending_rank: Option<u32>,
     preview_artifact_id: String,
     artifacts: Vec<GoogleFontArtifact>,
 }
@@ -630,6 +637,8 @@ fn parse_manifest(json: &str) -> Result<GoogleFontsManifest, String> {
             || family.last_modified.trim().is_empty()
             || family.version.trim().is_empty()
             || family.artifacts.is_empty()
+            || family.popularity_rank == Some(0)
+            || family.trending_rank == Some(0)
             || !family_ids.insert(family.id.as_str())
             || !is_hex_sha(&family.license_git_blob_sha)
             || family.license_size_bytes == 0
@@ -740,6 +749,16 @@ fn catalogue_page(
                 .cmp(&left.artifacts.len())
                 .then_with(|| left.family.cmp(&right.family))
         }),
+        "popular" => filtered.sort_by(|left, right| {
+            rank_key(left.popularity_rank)
+                .cmp(&rank_key(right.popularity_rank))
+                .then_with(|| left.family.cmp(&right.family))
+        }),
+        "trending" => filtered.sort_by(|left, right| {
+            rank_key(left.trending_rank)
+                .cmp(&rank_key(right.trending_rank))
+                .then_with(|| left.family.cmp(&right.family))
+        }),
         _ => filtered.sort_by_cached_key(|family| family.family.to_lowercase()),
     }
     let total = filtered.len();
@@ -764,6 +783,11 @@ fn catalogue_page(
     }
 }
 
+/// Ranked families sort ahead of unranked ones; rank 1 is the strongest.
+fn rank_key(rank: Option<u32>) -> u32 {
+    rank.unwrap_or(u32::MAX)
+}
+
 fn family_is_variable(family: &GoogleFontFamily) -> bool {
     family
         .artifacts
@@ -785,7 +809,7 @@ fn catalogue_request_is_valid(request: &GoogleFontPageRequestDto) -> bool {
         )
         && matches!(
             request.sort.trim().to_ascii_lowercase().as_str(),
-            "" | "name-asc" | "name-desc" | "recent" | "styles"
+            "" | "name-asc" | "name-desc" | "recent" | "styles" | "popular" | "trending"
         )
 }
 
@@ -892,6 +916,8 @@ mod tests {
           "licenseSizeBytes": 4377,
           "lastModified": "2026-07-18",
           "version": "fixture",
+          "popularityRank": 2,
+          "trendingRank": 1,
           "previewArtifactId": "gf:inter:regular",
           "artifacts": [
             {
@@ -916,6 +942,7 @@ mod tests {
           "licenseSizeBytes": 4400,
           "lastModified": "2026-07-18",
           "version": "fixture",
+          "popularityRank": 1,
           "previewArtifactId": "gf:source-serif-4:regular",
           "artifacts": [
             {
@@ -987,6 +1014,45 @@ mod tests {
 
         assert_eq!(page.family_ids, vec!["gf:inter"]);
         assert_eq!(page.total, 1);
+    }
+
+    #[test]
+    fn popularity_and_trending_sorts_follow_the_snapshot_ranks() {
+        let manifest = parse_manifest(MANIFEST).expect("a trusted manifest");
+        let installed_family_ids = HashSet::new();
+        let request = |sort: &str| GoogleFontPageRequest {
+            query: String::new(),
+            category: "all".to_owned(),
+            subset: "all".to_owned(),
+            technology: "all".to_owned(),
+            availability: "all".to_owned(),
+            sort: sort.to_owned(),
+            offset: 0,
+            limit: 60,
+        };
+
+        assert_eq!(
+            catalogue_page(&manifest, &request("popular"), &installed_family_ids).family_ids,
+            vec!["gf:source-serif-4", "gf:inter"]
+        );
+        // Source Serif 4 carries no trending rank, so it falls behind the ranked family.
+        assert_eq!(
+            catalogue_page(&manifest, &request("trending"), &installed_family_ids).family_ids,
+            vec!["gf:inter", "gf:source-serif-4"]
+        );
+    }
+
+    #[test]
+    fn the_shipped_manifest_carries_ranks_for_the_popularity_sorts() {
+        let manifest = parse_manifest(super::BUNDLED_MANIFEST).expect("the shipped manifest");
+        let ranked = manifest
+            .families
+            .iter()
+            .filter(|family| family.popularity_rank.is_some() && family.trending_rank.is_some())
+            .count();
+
+        // Without ranks both sorts silently collapse onto the alphabetical tiebreak.
+        assert_eq!(ranked, manifest.families.len());
     }
 
     #[test]

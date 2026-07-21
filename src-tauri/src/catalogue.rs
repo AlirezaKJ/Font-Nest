@@ -7,9 +7,11 @@ use sha1::{Digest, Sha1};
 
 use crate::dto::{
     FontCatalogue, FontFaceInspection, FontFaceSummary, FontFamilySummary, FontGlyphOutline,
-    FontGlyphVariationValue, FontParserJsonExport,
+    FontGlyphVariationValue, FontOrigin, FontParserJsonExport,
 };
 use crate::font_inspection::{self, FontInspectionError};
+use crate::font_origin;
+use crate::font_variations;
 
 pub struct ScannedFontCatalogue {
     pub catalogue: FontCatalogue,
@@ -110,9 +112,10 @@ struct FontFamily {
     styles: BTreeSet<String>,
     weights: BTreeSet<u16>,
     formats: BTreeSet<String>,
-    sources: BTreeSet<String>,
+    origins: BTreeSet<FontOrigin>,
     signatures: BTreeMap<String, BTreeSet<String>>,
     monospaced: bool,
+    variable: bool,
 }
 
 impl FontFamily {
@@ -125,14 +128,16 @@ impl FontFamily {
             styles: BTreeSet::new(),
             weights: BTreeSet::new(),
             formats: BTreeSet::new(),
-            sources: BTreeSet::new(),
+            origins: BTreeSet::new(),
             signatures: BTreeMap::new(),
             monospaced: true,
+            variable: false,
         }
     }
 
     fn add_face(&mut self, face: &FaceInfo) -> String {
-        let (source, file_name, file_key, format) = face_file_details(face);
+        let (origin, file_name, file_key, format) = face_file_details(face, &self.name);
+        let variable = face_is_variable(face);
         let style = style_value(face.style);
         let style_name = style_name(face.weight.0, face.style);
         let signature = format!("{}:{style}", face.weight.0);
@@ -142,12 +147,13 @@ impl FontFamily {
         self.styles.insert(style_name.clone());
         self.weights.insert(face.weight.0);
         self.formats.insert(format.clone());
-        self.sources.insert(source.clone());
+        self.origins.insert(origin);
         self.signatures
             .entry(signature)
             .or_default()
             .insert(file_key.clone());
         self.monospaced &= face.monospaced;
+        self.variable |= variable;
 
         self.faces.push(FontFaceSummary {
             id: face_id.clone(),
@@ -156,10 +162,11 @@ impl FontFamily {
             style: style.to_owned(),
             weight: face.weight.0,
             format,
-            source,
+            origin,
             file_name,
             face_index: face.index,
             monospaced: face.monospaced,
+            variable,
         });
         face_id
     }
@@ -185,8 +192,9 @@ impl FontFamily {
             styles: self.styles.into_iter().collect(),
             weights: self.weights.into_iter().collect(),
             formats: self.formats.into_iter().collect(),
-            sources: self.sources.into_iter().collect(),
+            origins: self.origins.into_iter().collect(),
             monospaced: self.monospaced,
+            variable: self.variable,
             has_conflict,
             faces: self.faces,
         }
@@ -251,10 +259,18 @@ fn opaque_face_id(file_key: &str, face_index: u32, post_script_name: &str) -> St
     face_id
 }
 
-fn face_file_details(face: &FaceInfo) -> (String, String, String, String) {
+/// Only file-backed faces can be checked; fontdb's in-memory sources have no path to read.
+fn face_is_variable(face: &FaceInfo) -> bool {
+    match &face.source {
+        Source::File(path) => font_variations::face_is_variable(path, face.index),
+        _ => false,
+    }
+}
+
+fn face_file_details(face: &FaceInfo, family_name: &str) -> (FontOrigin, String, String, String) {
     let Source::File(path) = &face.source else {
         return (
-            "Embedded".to_owned(),
+            FontOrigin::Unknown,
             "In-memory font".to_owned(),
             format!("embedded:{}", face.post_script_name),
             "Unknown".to_owned(),
@@ -269,30 +285,11 @@ fn face_file_details(face: &FaceInfo) -> (String, String, String, String) {
     let file_key = path.to_string_lossy().into_owned();
 
     (
-        source_label(path).to_owned(),
+        font_origin::classify(path, family_name),
         file_name,
         file_key,
         format_label(path).to_owned(),
     )
-}
-
-fn source_label(path: &Path) -> &'static str {
-    let normalized = path.to_string_lossy().replace('\\', "/").to_lowercase();
-
-    if normalized.contains("/appdata/local/microsoft/windows/fonts/")
-        || normalized.contains("/appdata/roaming/microsoft/windows/fonts/")
-        || normalized.contains("/.local/share/fonts/")
-        || normalized.contains("/library/fonts/") && !normalized.starts_with("/system/")
-    {
-        "User"
-    } else if normalized.contains("/windows/fonts/")
-        || normalized.starts_with("/system/library/fonts/")
-        || normalized.starts_with("/usr/share/fonts/")
-    {
-        "System"
-    } else {
-        "Other"
-    }
 }
 
 fn format_label(path: &Path) -> &'static str {
@@ -355,7 +352,7 @@ mod tests {
 
     use fontdb::Style;
 
-    use super::{family_id, format_label, opaque_face_id, source_label, style_name};
+    use super::{family_id, format_label, opaque_face_id, style_name};
 
     #[test]
     fn family_ids_are_normalized_for_selection() {
@@ -369,20 +366,14 @@ mod tests {
     }
 
     #[test]
-    fn windows_font_sources_keep_system_and_user_boundaries_explicit() {
-        assert_eq!(
-            source_label(Path::new("C:\\Windows\\Fonts\\arial.ttf")),
-            "System"
-        );
-        assert_eq!(
-            source_label(Path::new(
-                "C:\\Users\\Akari\\AppData\\Local\\Microsoft\\Windows\\Fonts\\Inter.ttf"
-            )),
-            "User"
-        );
+    fn font_formats_are_named_from_the_file_extension() {
         assert_eq!(
             format_label(Path::new("C:\\Windows\\Fonts\\arial.ttf")),
             "TrueType"
+        );
+        assert_eq!(
+            format_label(Path::new("/Library/Fonts/Inter.otf")),
+            "OpenType"
         );
     }
 

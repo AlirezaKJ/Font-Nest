@@ -1,12 +1,15 @@
 import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
 import type { FontFaceSummary } from '$lib/bindings/FontFaceSummary';
 import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
+import type { FontOrigin } from '$lib/bindings/FontOrigin';
+import { sortOrigins } from '$lib/fonts/font-origin';
 
 type BrowserFamily = {
 	name: string;
 	styles: Array<[string, number, 'normal' | 'italic']>;
 	format: string;
-	source: string;
+	origin: FontOrigin;
+	variable?: boolean;
 	monospaced?: boolean;
 	conflict?: boolean;
 };
@@ -21,7 +24,7 @@ const browserFamilies: BrowserFamily[] = [
 			['Italic', 400, 'italic']
 		],
 		format: 'TrueType',
-		source: 'System'
+		origin: 'systemDefault'
 	},
 	{
 		name: 'Georgia',
@@ -31,7 +34,7 @@ const browserFamilies: BrowserFamily[] = [
 			['Italic', 400, 'italic']
 		],
 		format: 'TrueType',
-		source: 'System'
+		origin: 'systemDefault'
 	},
 	{
 		name: 'Arial',
@@ -41,7 +44,7 @@ const browserFamilies: BrowserFamily[] = [
 			['Italic', 400, 'italic']
 		],
 		format: 'TrueType',
-		source: 'System'
+		origin: 'systemDefault'
 	},
 	{
 		name: 'Bahnschrift',
@@ -50,7 +53,8 @@ const browserFamilies: BrowserFamily[] = [
 			['Semi Bold', 600, 'normal']
 		],
 		format: 'OpenType',
-		source: 'System'
+		origin: 'systemDefault',
+		variable: true
 	},
 	{
 		name: 'Consolas',
@@ -60,7 +64,7 @@ const browserFamilies: BrowserFamily[] = [
 			['Italic', 400, 'italic']
 		],
 		format: 'TrueType',
-		source: 'System',
+		origin: 'systemDefault',
 		monospaced: true
 	},
 	{
@@ -70,7 +74,7 @@ const browserFamilies: BrowserFamily[] = [
 			['Bold', 700, 'normal']
 		],
 		format: 'TrueType',
-		source: 'System'
+		origin: 'systemDefault'
 	},
 	{
 		name: 'Trebuchet MS',
@@ -79,7 +83,7 @@ const browserFamilies: BrowserFamily[] = [
 			['Bold', 700, 'normal']
 		],
 		format: 'TrueType',
-		source: 'System'
+		origin: 'systemDefault'
 	},
 	{
 		name: 'Courier New',
@@ -88,7 +92,7 @@ const browserFamilies: BrowserFamily[] = [
 			['Bold', 700, 'normal']
 		],
 		format: 'TrueType',
-		source: 'System',
+		origin: 'systemDefault',
 		monospaced: true
 	},
 	{
@@ -99,7 +103,8 @@ const browserFamilies: BrowserFamily[] = [
 			['Bold', 700, 'normal']
 		],
 		format: 'OpenType',
-		source: 'User'
+		origin: 'userInstalled',
+		variable: true
 	},
 	{
 		name: 'Inter',
@@ -110,7 +115,7 @@ const browserFamilies: BrowserFamily[] = [
 			['Regular', 400, 'normal']
 		],
 		format: 'OpenType',
-		source: 'User',
+		origin: 'userInstalled',
 		conflict: true
 	}
 ];
@@ -123,7 +128,11 @@ function createFace(
 	index: number
 ): FontFaceSummary {
 	const fileStem = family.name.replaceAll(' ', '');
-	const conflictSuffix = family.conflict && index === family.styles.length - 1 ? '-Copy' : '';
+	const isDuplicate = family.conflict === true && index === family.styles.length - 1;
+	const conflictSuffix = isDuplicate ? '-Copy' : '';
+	// The duplicate stands in for the usual cause of a conflict: the same face installed
+	// once for everyone and again for one account.
+	const origin: FontOrigin = isDuplicate ? 'machineInstalled' : family.origin;
 	return {
 		id: `${family.name.toLowerCase()}:${index}`,
 		postScriptName: `${fileStem}-${styleName.replaceAll(' ', '')}`,
@@ -131,10 +140,11 @@ function createFace(
 		style,
 		weight,
 		format: family.format,
-		source: family.source,
+		origin,
 		fileName: `${fileStem}-${styleName.replaceAll(' ', '')}${conflictSuffix}.${family.format === 'OpenType' ? 'otf' : 'ttf'}`,
 		faceIndex: 0,
-		monospaced: family.monospaced ?? false
+		monospaced: family.monospaced ?? false,
+		variable: family.variable ?? false
 	};
 }
 
@@ -150,8 +160,9 @@ function createFamily(family: BrowserFamily): FontFamilySummary {
 		styles: faces.map((face) => face.styleName),
 		weights: [...new Set(faces.map((face) => face.weight))].sort((a, b) => a - b),
 		formats: [family.format],
-		sources: [family.source],
+		origins: sortOrigins([...new Set(faces.map((face) => face.origin))]),
 		monospaced: family.monospaced ?? false,
+		variable: faces.some((face) => face.variable),
 		hasConflict: family.conflict ?? false,
 		faces
 	};

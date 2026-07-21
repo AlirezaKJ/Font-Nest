@@ -3,7 +3,7 @@ title: FontNest Todos
 type: todo
 status: active
 created: 2026-06-05
-updated: 2026-07-19
+updated: 2026-07-22
 tags:
     - project
     - todo
@@ -263,7 +263,10 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P1** Add multi-selection, range selection, “select all filtered,” and safe bulk actions.
 - [ ] **P1** Add keyboard-complete roving focus that works across virtualized content.
 - [ ] **P2** Group by family, foundry, source, folder, collection, tag, script, or status.
-- [ ] **P2** Label system, protected, user, preview-only, FontNest-managed, provider-managed, shadowed, and unavailable records explicitly.
+- [ ] **P2** Label system, protected, user, preview-only, FontNest-managed, provider-managed, shadowed, and unavailable records explicitly. Partially shipped 2026-07-22: every face carries a `FontOrigin` (system default, all users, current user, unknown), families report mixed origins, and the label appears in the library list, inspector, preview view, and Conflicts view. Preview-only, FontNest-managed, provider-managed, shadowed, and unavailable states are still unlabelled.
+- [x] Mark variable families in the library, preview view, and style lists, and expose a Technology filter (variable/static) plus a `variable` search term.
+- [x] Replace the row of filter dropdowns in Library and Discover with one Filters popover carrying an active-filter count, keep Sort separate, and move active-filter chips next to the search box.
+- [x] Add a library toolbar Weight slider that redraws every specimen (static families snap to their nearest available weight, variable families move through their range) with Reset all returning to Regular.
 - [ ] **P2** Add quick actions for preview, compare, favorite, collect, copy identifier, reveal, export metadata, activate, and managed uninstall.
 - [ ] **P3** Add a calm library overview: family/face counts by format, source, foundry, static/variable, color capability, and disk usage, presented as archival summary rather than a dashboard.
 - [ ] **P2** Add accessible result counts, `aria-busy`, and virtualized-list semantics without flooding screen readers.
@@ -422,6 +425,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [x] Validate opaque provider IDs and app origin for sensitive preview/install commands.
 - [x] Preserve upstream licence data with FontNest-managed installations.
 - [x] Require an explicit artifact review before current-user Windows installation.
+- [x] Capture Google's popularity and trending orderings in the refresh script as per-family ranks and offer Most popular / Trending sorts in Discover; unranked families fall behind the ranked ones.
 
 ### Provider hardening
 

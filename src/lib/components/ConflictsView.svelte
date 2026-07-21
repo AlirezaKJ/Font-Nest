@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
+	import { familyOrigin, fontOrigin, includesSystemFont } from '$lib/fonts/font-origin';
 	import Icon from './Icon.svelte';
 
 	let {
@@ -13,14 +14,16 @@
 
 <section class="conflicts-view" aria-labelledby="conflicts-title">
 	<header class="view-heading">
-	<div>
-	<h1 id="conflicts-title">Potential conflicts</h1>
-	<p>
-	Families are flagged when the same weight and style appear in more than one font
-	file. Nothing is changed automatically.
-	</p>
-	</div>
-	<span class="count-chip">{families.length} {families.length === 1 ? 'family' : 'families'}</span>
+		<div>
+			<h1 id="conflicts-title">Potential conflicts</h1>
+			<p>
+				Families are flagged when the same weight and style appear in more than one font
+				file. Nothing is changed automatically.
+			</p>
+		</div>
+		<span class="count-chip"
+			>{families.length} {families.length === 1 ? 'family' : 'families'}</span
+		>
 	</header>
 
 	{#if families.length}
@@ -32,9 +35,9 @@
 						<div>
 							<h2>{family.name}</h2>
 							<p>
-								{family.faceCount} faces across {family.fileCount} files · {family.sources.join(
-									' · '
-								)}
+								{family.faceCount} faces across {family.fileCount} files · {familyOrigin(
+									family.origins
+								).label}
 							</p>
 						</div>
 						<button type="button" onclick={() => onInspect(family.id)}>
@@ -42,17 +45,24 @@
 						</button>
 					</div>
 
+					{#if includesSystemFont(family.origins)}
+						<p class="system-note">
+							Part of this family ships with your operating system. Only the files you
+							installed are safe to remove.
+						</p>
+					{/if}
+
 					<div class="face-table" role="table" aria-label={`${family.name} file details`}>
 						<div class="face-head" role="row">
 							<span role="columnheader">Face</span>
 							<span role="columnheader">File</span>
-							<span role="columnheader">Source</span>
+							<span role="columnheader">Origin</span>
 						</div>
 						{#each family.faces.slice(0, 8) as face (face.id)}
 							<div class="face-row" role="row">
 								<span role="cell">{face.styleName}</span>
 								<span role="cell" title={face.fileName}>{face.fileName}</span>
-								<span role="cell">{face.source}</span>
+								<span role="cell">{fontOrigin(face.origin).label}</span>
 							</div>
 						{/each}
 					</div>
@@ -72,6 +82,12 @@
 </section>
 
 <style>
+	.system-note {
+		margin: -4px 16px 14px 64px;
+		color: var(--color-muted);
+		font-size: var(--text-micro);
+	}
+
 	.conflicts-view {
 		min-width: 0;
 		min-height: 100%;
@@ -197,7 +213,7 @@
 	.face-head,
 	.face-row {
 		display: grid;
-		grid-template-columns: minmax(120px, 0.7fr) minmax(180px, 1.4fr) minmax(90px, 0.6fr);
+		grid-template-columns: minmax(120px, 0.7fr) minmax(180px, 1.4fr) minmax(110px, 0.6fr);
 		align-items: center;
 		gap: 16px;
 		padding: 0 16px;
@@ -217,11 +233,14 @@
 		font-size: var(--text-body-sm);
 	}
 
-	.face-row span:nth-child(2) {
+	.face-row span {
 		overflow: hidden;
-		color: var(--color-muted);
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.face-row span:nth-child(2) {
+		color: var(--color-muted);
 	}
 
 	.face-row span:last-child {
@@ -276,50 +295,50 @@
 
 		.face-head,
 		.face-row {
-			grid-template-columns: minmax(90px, 0.8fr) minmax(140px, 1.2fr);
+			grid-template-columns: minmax(64px, 0.6fr) minmax(96px, 1.1fr) minmax(76px, 0.6fr);
+			gap: 10px;
 		}
 
-		.face-head span:last-child,
-		.face-row span:last-child {
-			display: none;
+		.system-note {
+			margin-left: 18px;
 		}
 	}
 
-  .view-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 24px 28px 20px;
-  border-bottom: 1px solid var(--color-border);
-  }
+	.view-heading {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 24px;
+		padding: 24px 28px 20px;
+		border-bottom: 1px solid var(--color-border);
+	}
 
-  h1 {
-  margin: 0;
-  font-size: var(--text-heading);
-  line-height: 1.2;
-  letter-spacing: -0.03em;
-  }
+	h1 {
+		margin: 0;
+		font-size: var(--text-heading);
+		line-height: 1.2;
+		letter-spacing: -0.03em;
+	}
 
-  .view-heading p:last-child {
-  max-width: 66ch;
-  margin: 7px 0 0;
-  color: var(--color-muted);
-  font-size: var(--text-body-sm);
-  line-height: 1.5;
-  }
+	.view-heading p:last-child {
+		max-width: 66ch;
+		margin: 7px 0 0;
+		color: var(--color-muted);
+		font-size: var(--text-body-sm);
+		line-height: 1.5;
+	}
 
-  .count-chip {
-  display: inline-flex;
-  min-height: 28px;
-  align-items: center;
-  padding: 0 10px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-shell);
-  color: var(--color-warning);
-  background: var(--color-panel);
-  font-size: var(--text-label);
-  font-weight: 600;
-  white-space: nowrap;
-  }
+	.count-chip {
+		display: inline-flex;
+		min-height: 28px;
+		align-items: center;
+		padding: 0 10px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-shell);
+		color: var(--color-warning);
+		background: var(--color-panel);
+		font-size: var(--text-label);
+		font-weight: 600;
+		white-space: nowrap;
+	}
 </style>

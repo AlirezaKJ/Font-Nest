@@ -65,10 +65,12 @@ if (tree.truncated) {
 }
 
 const sourceFamilies = fixtureMode
-	? fixtureFamilies.map((family) => ({
+	? fixtureFamilies.map((family, index) => ({
 			...family,
 			lastModified: new Date().toISOString().slice(0, 10),
-			version: 'fixture'
+			version: 'fixture',
+			popularityRank: index + 1,
+			trendingRank: fixtureFamilies.length - index
 		}))
 	: await fetchGoogleFamilies(apiKey);
 
@@ -117,9 +119,26 @@ async function loadLocalEnvironment() {
 }
 
 async function fetchGoogleFamilies(key) {
+	// Both orderings come from the same catalogue, so the rank a family holds in each
+	// response is the only popularity and trending signal the API exposes. Capture it here
+	// or it is lost the moment the manifest is sorted by name.
+	const [popular, trending] = await Promise.all([
+		fetchGoogleFamilyOrder(key, 'popularity'),
+		fetchGoogleFamilyOrder(key, 'trending')
+	]);
+	const trendingRanks = new Map(trending.map((item, index) => [item.family, index + 1]));
+
+	return popular.map((item, index) => ({
+		...item,
+		popularityRank: index + 1,
+		trendingRank: trendingRanks.get(item.family) ?? null
+	}));
+}
+
+async function fetchGoogleFamilyOrder(key, sort) {
 	const endpoint = new URL('https://www.googleapis.com/webfonts/v1/webfonts');
 	endpoint.searchParams.set('capability', 'VF');
-	endpoint.searchParams.set('sort', 'popularity');
+	endpoint.searchParams.set('sort', sort);
 	endpoint.searchParams.set('key', key);
 	const response = await fetchJson(endpoint);
 	return response.items;
@@ -189,6 +208,8 @@ function buildFamily(source, sourceCommit, entries) {
 		licenseSizeBytes: licenseFile.size,
 		lastModified: source.lastModified ?? new Date().toISOString().slice(0, 10),
 		version: source.version ?? 'unknown',
+		popularityRank: source.popularityRank ?? null,
+		trendingRank: source.trendingRank ?? null,
 		previewArtifactId: previewArtifact.id,
 		artifacts
 	};

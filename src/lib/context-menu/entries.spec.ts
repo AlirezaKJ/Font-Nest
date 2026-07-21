@@ -21,10 +21,11 @@ const FACE: FontFaceSummary = {
 	style: 'normal',
 	weight: 700,
 	format: 'OpenType',
-	source: 'User',
+	origin: 'userInstalled',
 	fileName: 'SourceSerif4-Bold.otf',
 	faceIndex: 0,
-	monospaced: false
+	monospaced: false,
+	variable: false
 };
 
 const FAMILY: FontFamilySummary = {
@@ -35,8 +36,9 @@ const FAMILY: FontFamilySummary = {
 	styles: ['Regular', 'Bold'],
 	weights: [400, 700],
 	formats: ['OpenType'],
-	sources: ['User'],
+	origins: ['userInstalled'],
 	monospaced: false,
+	variable: false,
 	hasConflict: false,
 	faces: [FACE]
 };

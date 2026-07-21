@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, untrack } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 
+	import type { GoogleFontArtifactSummary } from '$lib/bindings/GoogleFontArtifactSummary';
 	import type { GoogleFontFamilyDetails } from '$lib/bindings/GoogleFontFamilyDetails';
 	import type { GoogleFontFamilySummary } from '$lib/bindings/GoogleFontFamilySummary';
 	import type { GoogleFontPage } from '$lib/bindings/GoogleFontPage';
@@ -9,6 +10,7 @@
 	import { writeClipboardText } from '$lib/context-menu/clipboard';
 	import { discoverFamilyContextMenu } from '$lib/context-menu/entries';
 	import { KeyedTaskQueue, pickPreviewEvictionCandidate } from '$lib/discover/preview-queue';
+	import { pickPreviewArtifact } from '$lib/discover/preview-weights';
 	import { activateInstalledGoogleFont } from '$lib/fonts/session-fonts';
 	import { isStickySurfaceElevated } from '$lib/sticky-surface';
 	import {
@@ -19,7 +21,9 @@
 	} from '$lib/tauri/commands';
 
 	import DiscoverFilterMenu, { type DiscoverFilterOption } from './DiscoverFilterMenu.svelte';
+	import FilterPopover, { type FilterGroup } from './FilterPopover.svelte';
 	import Icon from './Icon.svelte';
+	import RangeSlider from './RangeSlider.svelte';
 
 	type FilterKey = 'category' | 'subset' | 'technology' | 'availability' | 'sort';
 	type SpecimenMode = 'names' | 'custom';
@@ -31,6 +35,20 @@
 	const MAX_LOADED_PREVIEWS = 24;
 	const PREVIEW_CONCURRENCY = 3;
 	const DEFAULT_SPECIMEN_SIZE = 112;
+	const DEFAULT_SPECIMEN_WEIGHT = 400;
+	const WEIGHT_NOTE_LINGER_MS = 2600;
+	const WEIGHT_NAMES: Record<number, string> = {
+		100: 'Thin',
+		200: 'Extralight',
+		300: 'Light',
+		400: 'Regular',
+		500: 'Medium',
+		600: 'Semibold',
+		700: 'Bold',
+		800: 'Extrabold',
+		900: 'Black'
+	};
+	const DEFAULT_SORT = 'trending';
 	const SKELETON_ROWS = [0, 1, 2, 3];
 
 	const CATEGORY_OPTIONS: DiscoverFilterOption[] = [
@@ -63,6 +81,8 @@
 		{ value: 'managed', label: 'Managed', description: 'Installed through FontNest' }
 	];
 	const SORT_OPTIONS: DiscoverFilterOption[] = [
+		{ value: 'trending', label: 'Trending' },
+		{ value: 'popular', label: 'Most popular' },
 		{ value: 'name-asc', label: 'Name A–Z' },
 		{ value: 'name-desc', label: 'Name Z–A' },
 		{ value: 'recent', label: 'Recently updated' },
@@ -168,9 +188,11 @@
 	let subset = $state('all');
 	let technology = $state('all');
 	let availability = $state('all');
-	let sort = $state('name-asc');
+	let sort = $state(DEFAULT_SORT);
 	let specimenMode = $state<SpecimenMode>('names');
 	let specimenSize = $state(DEFAULT_SPECIMEN_SIZE);
+	let specimenWeight = $state(DEFAULT_SPECIMEN_WEIGHT);
+	let weightNotesVisible = $state(false);
 	let loadingCatalogue = $state(true);
 	let loadMoreSentinel = $state<HTMLElement | null>(null);
 	let loadingDetails = $state(false);
@@ -180,17 +202,24 @@
 	let detailsError = $state('');
 	let previewFamilies = $state<Record<string, string>>({});
 	let previewStatuses = $state<Record<string, PreviewStatus>>({});
+	/** The specimen weight each family's loaded preview was fetched for. */
+	let previewWeights = $state<Record<string, number>>({});
+	/** The weight the loaded file actually draws, which a static family may round off. */
+	let renderWeights = $state<Record<string, number>>({});
 	let discoverScroll = $state<HTMLElement>();
 	let discoverControls = $state<HTMLElement>();
 	let discoverControlsElevated = $state(false);
 	let installDialog = $state<HTMLDialogElement>();
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
+	let weightTimer: ReturnType<typeof setTimeout> | undefined;
+	let weightNoteTimer: ReturnType<typeof setTimeout> | undefined;
 	let catalogueRequest = 0;
 	let detailsRequest = 0;
 	let destroyed = false;
 
 	const previewQueue = new KeyedTaskQueue<LoadedPreview>(PREVIEW_CONCURRENCY);
 	const loadedPreviewFaces = new SvelteMap<string, FontFace>();
+	const artifactsByFamily = new SvelteMap<string, GoogleFontArtifactSummary[]>();
 	const visiblePreviewIds = new SvelteSet<string>();
 	let previewUseOrder: string[] = [];
 
@@ -210,28 +239,35 @@
 			.filter((artifact) => selectedArtifactIds.includes(artifact.id))
 			.reduce((total, artifact) => total + artifact.sizeBytes, 0)
 	);
-	let activeFilters = $derived.by(() => {
-		const filters: ActiveFilter[] = [];
-		if (category !== 'all')
-			filters.push({ key: 'category', label: optionLabel(CATEGORY_OPTIONS, category) });
-		if (subset !== 'all')
-			filters.push({ key: 'subset', label: optionLabel(SUBSET_OPTIONS, subset) });
-		if (technology !== 'all')
-			filters.push({ key: 'technology', label: optionLabel(TECHNOLOGY_OPTIONS, technology) });
-		if (availability !== 'all')
-			filters.push({
-				key: 'availability',
-				label: optionLabel(AVAILABILITY_OPTIONS, availability)
-			});
-		if (sort !== 'name-asc')
-			filters.push({ key: 'sort', label: optionLabel(SORT_OPTIONS, sort) });
-		return filters;
-	});
+	let filterGroups = $derived.by<FilterGroup[]>(() => [
+		{ key: 'category', label: 'Category', value: category, options: CATEGORY_OPTIONS },
+		{ key: 'subset', label: 'Script', value: subset, options: SUBSET_OPTIONS },
+		{ key: 'technology', label: 'Technology', value: technology, options: TECHNOLOGY_OPTIONS },
+		{
+			key: 'availability',
+			label: 'Availability',
+			value: availability,
+			options: AVAILABILITY_OPTIONS
+		}
+	]);
+
+	// The trigger no longer shows each filter's value, so these chips are the only place
+	// active choices are named. Sort stays out of them: it always has a visible value.
+	let activeFilters = $derived.by<ActiveFilter[]>(() =>
+		filterGroups
+			.filter((group) => group.value !== 'all')
+			.map((group) => ({
+				key: group.key as FilterKey,
+				label: optionLabel(group.options, group.value)
+			}))
+	);
 	let hasResettableState = $derived(
 		Boolean(search) ||
 			activeFilters.length > 0 ||
+			sort !== DEFAULT_SORT ||
 			specimenMode !== 'names' ||
-			specimenSize !== DEFAULT_SPECIMEN_SIZE
+			specimenSize !== DEFAULT_SPECIMEN_SIZE ||
+			specimenWeight !== DEFAULT_SPECIMEN_WEIGHT
 	);
 
 	onMount(() => {
@@ -268,9 +304,28 @@
 		return () => observer.disconnect();
 	});
 
+	// Each family has one file loaded at one weight, so moving the slider means the families
+	// on screen have to work out which file they need now. Everything else does it when it
+	// scrolls into view. Dragging settles first: a drag crosses every weight on the way.
+	$effect(() => {
+		const weight = specimenWeight;
+		if (weightTimer) clearTimeout(weightTimer);
+		weightTimer = setTimeout(() => {
+			untrack(() => {
+				for (const familyId of visiblePreviewIds) {
+					if (previewWeights[familyId] === weight) continue;
+					const family = families.find((candidate) => candidate.id === familyId);
+					if (family) void requestPreview(family);
+				}
+			});
+		}, 240);
+	});
+
 	onDestroy(() => {
 		destroyed = true;
 		if (searchTimer) clearTimeout(searchTimer);
+		if (weightTimer) clearTimeout(weightTimer);
+		if (weightNoteTimer) clearTimeout(weightNoteTimer);
 		for (const face of loadedPreviewFaces.values()) document.fonts.delete(face);
 		loadedPreviewFaces.clear();
 		visiblePreviewIds.clear();
@@ -349,6 +404,9 @@
 			if (sort === 'name-desc') return right.family.localeCompare(left.family);
 			if (sort === 'recent') return right.lastModified.localeCompare(left.lastModified);
 			if (sort === 'styles') return right.artifactCount - left.artifactCount;
+			// The fixtures carry no ranking data, so the sample order stands in for both.
+			if (sort === 'trending' || sort === 'popular')
+				return SAMPLE_FAMILIES.indexOf(left) - SAMPLE_FAMILIES.indexOf(right);
 			return left.family.localeCompare(right.family);
 		});
 	}
@@ -369,7 +427,15 @@
 	}
 
 	function clearFilter(key: FilterKey) {
-		updateFilter(key, key === 'sort' ? 'name-asc' : 'all');
+		updateFilter(key, key === 'sort' ? DEFAULT_SORT : 'all');
+	}
+
+	function clearFilters() {
+		category = 'all';
+		subset = 'all';
+		technology = 'all';
+		availability = 'all';
+		void loadCatalogue(true);
 	}
 
 	function resetAll() {
@@ -379,9 +445,10 @@
 		subset = 'all';
 		technology = 'all';
 		availability = 'all';
-		sort = 'name-asc';
+		sort = DEFAULT_SORT;
 		specimenMode = 'names';
 		specimenSize = DEFAULT_SPECIMEN_SIZE;
+		specimenWeight = DEFAULT_SPECIMEN_WEIGHT;
 		void loadCatalogue(true);
 	}
 
@@ -419,6 +486,7 @@
 					);
 			if (requestId !== detailsRequest || selectedFamilyId !== familyId) return;
 			details = response;
+			artifactsByFamily.set(familyId, response.artifacts);
 			selectedArtifactIds = response.artifacts
 				.filter((artifact) => !artifact.installed)
 				.map((artifact) => artifact.id);
@@ -454,38 +522,97 @@
 		};
 	}
 
+	/**
+	 * The family's artifact list, which names the weight each file draws. It comes from the
+	 * manifest that ships with the app rather than the network, and it is cached per family
+	 * because the specimen list asks for it again on every weight change.
+	 */
+	async function familyArtifacts(
+		family: GoogleFontFamilySummary
+	): Promise<GoogleFontArtifactSummary[]> {
+		const cached = artifactsByFamily.get(family.id);
+		if (cached) return cached;
+		const response = nativeMode ? await getGoogleFontDetails(family.id) : sampleDetails(family);
+		artifactsByFamily.set(family.id, response.artifacts);
+		return response.artifacts;
+	}
+
+	async function resolvePreview(
+		family: GoogleFontFamilySummary,
+		weight: number
+	): Promise<{ artifactId: string; renderWeight: number; variable: boolean }> {
+		const fallback = {
+			artifactId: family.previewArtifactId,
+			renderWeight: weight,
+			variable: false
+		};
+		try {
+			const selection = pickPreviewArtifact(await familyArtifacts(family), weight);
+			if (!selection) return fallback;
+			return {
+				artifactId: selection.artifactId,
+				// A variable file is drawn at whatever was asked for; a static one is drawn at
+				// the weight it actually holds, so nothing on screen is a synthesized fake.
+				renderWeight: selection.variable ? weight : (selection.weight ?? weight),
+				variable: selection.variable
+			};
+		} catch {
+			return fallback;
+		}
+	}
+
 	async function requestPreview(family: GoogleFontFamilySummary) {
+		const weight = specimenWeight;
 		const status = previewStatuses[family.id] ?? 'idle';
-		if (status === 'loading' || status === 'loaded' || status === 'error') {
+		if (previewWeights[family.id] === weight && status !== 'idle') {
 			if (status === 'loaded') touchPreview(family.id);
 			return;
 		}
 
 		if (!nativeMode) {
 			previewFamilies[family.id] = `"${family.family}", system-ui, sans-serif`;
+			previewWeights[family.id] = weight;
+			renderWeights[family.id] = weight;
 			previewStatuses[family.id] = 'loaded';
 			return;
 		}
 
-		previewStatuses[family.id] = 'loading';
+		previewWeights[family.id] = weight;
+		// A family already showing a specimen keeps it while the new weight is fetched, so
+		// dragging the slider does not blink the whole list back to skeletons.
+		if (status !== 'loaded') previewStatuses[family.id] = 'loading';
 		try {
-			const loaded = await previewQueue.enqueue(family.id, async () => {
-				const preview = await prepareGoogleFontPreview(family.previewArtifactId);
-				const face = new FontFace(preview.fontFamily, `url(${preview.dataUrl})`);
+			const target = await resolvePreview(family, weight);
+			if (destroyed || previewWeights[family.id] !== weight) return;
+			// Keyed by artifact so a weight change mid-flight does not attach to the request
+			// for the file the previous weight wanted.
+			const loaded = await previewQueue.enqueue(target.artifactId, async () => {
+				const preview = await prepareGoogleFontPreview(target.artifactId);
+				const face = new FontFace(preview.fontFamily, `url(${preview.dataUrl})`, {
+					weight: target.variable ? '1 1000' : String(target.renderWeight)
+				});
 				await face.load();
 				return { face, fontFamily: preview.fontFamily };
 			});
-			if (destroyed) return;
-			document.fonts.add(loaded.face);
-			loadedPreviewFaces.set(family.id, loaded.face);
+			if (destroyed || previewWeights[family.id] !== weight) return;
+			replacePreviewFace(family.id, loaded.face);
 			previewFamilies[family.id] = `"${loaded.fontFamily}", system-ui, sans-serif`;
+			renderWeights[family.id] = target.renderWeight;
 			previewStatuses[family.id] = 'loaded';
+			if (target.renderWeight !== weight) showWeightNotes();
 			touchPreview(family.id);
 			enforcePreviewCacheLimit();
 		} catch {
-			if (destroyed) return;
+			if (destroyed || previewWeights[family.id] !== weight) return;
 			previewStatuses[family.id] = 'error';
 		}
+	}
+
+	function replacePreviewFace(familyId: string, face: FontFace) {
+		const previous = loadedPreviewFaces.get(familyId);
+		if (previous && previous !== face) document.fonts.delete(previous);
+		document.fonts.add(face);
+		loadedPreviewFaces.set(familyId, face);
 	}
 
 	function touchPreview(familyId: string) {
@@ -505,12 +632,43 @@
 			loadedPreviewFaces.delete(candidate);
 			previewUseOrder = previewUseOrder.filter((id) => id !== candidate);
 			delete previewFamilies[candidate];
+			delete previewWeights[candidate];
+			delete renderWeights[candidate];
 			previewStatuses[candidate] = 'idle';
 		}
 	}
 
 	function previewStatus(familyId: string): PreviewStatus {
 		return previewStatuses[familyId] ?? 'idle';
+	}
+
+	function weightName(weight: number): string {
+		return WEIGHT_NAMES[weight] ?? String(weight);
+	}
+
+	/**
+	 * The weight the loaded file draws. A family that ships no cut at the requested weight
+	 * renders at the closest one it has rather than a weight the browser invents.
+	 */
+	function renderWeight(familyId: string): number {
+		return renderWeights[familyId] ?? specimenWeight;
+	}
+
+	/**
+	 * The note answers a question the user just asked by moving the slider, so it shows itself
+	 * then gets out of the way rather than sitting on every row that has no cut that close. The
+	 * timer restarts when a preview lands, since the file it needed may have arrived late.
+	 */
+	function showWeightNotes() {
+		weightNotesVisible = true;
+		if (weightNoteTimer) clearTimeout(weightNoteTimer);
+		weightNoteTimer = setTimeout(() => (weightNotesVisible = false), WEIGHT_NOTE_LINGER_MS);
+	}
+
+	function substituteWeightNote(familyId: string): string | null {
+		const drawn = renderWeights[familyId];
+		if (drawn === undefined || drawn === specimenWeight) return null;
+		return `Closest cut: ${weightName(drawn)}`;
 	}
 
 	function specimenText(family: GoogleFontFamilySummary) {
@@ -693,7 +851,7 @@
 	>
 		<div class="primary-toolbar">
 			<label class="search-control">
-				<span>Search</span>
+				<span class="sr-only">Search</span>
 				<Icon name="search" size={15} />
 				<input
 					type="search"
@@ -703,33 +861,11 @@
 				/>
 			</label>
 			<div class="filter-strip">
-				<DiscoverFilterMenu
-					id="discover-category"
-					label="Category"
-					value={category}
-					options={CATEGORY_OPTIONS}
-					onChange={(value) => updateFilter('category', value)}
-				/>
-				<DiscoverFilterMenu
-					id="discover-script"
-					label="Script"
-					value={subset}
-					options={SUBSET_OPTIONS}
-					onChange={(value) => updateFilter('subset', value)}
-				/>
-				<DiscoverFilterMenu
-					id="discover-technology"
-					label="Technology"
-					value={technology}
-					options={TECHNOLOGY_OPTIONS}
-					onChange={(value) => updateFilter('technology', value)}
-				/>
-				<DiscoverFilterMenu
-					id="discover-availability"
-					label="Availability"
-					value={availability}
-					options={AVAILABILITY_OPTIONS}
-					onChange={(value) => updateFilter('availability', value)}
+				<FilterPopover
+					id="discover-filters"
+					groups={filterGroups}
+					onChange={(key, value) => updateFilter(key as FilterKey, value)}
+					onClear={clearFilters}
 				/>
 				<DiscoverFilterMenu
 					id="discover-sort"
@@ -738,12 +874,33 @@
 					options={SORT_OPTIONS}
 					onChange={(value) => updateFilter('sort', value)}
 				/>
+				<div
+					class:empty={activeFilters.length === 0}
+					class="active-filter-summary"
+					aria-live="polite"
+				>
+					{#each activeFilters as filter (filter.key)}
+						<button
+							type="button"
+							aria-label={`Remove ${filter.label} filter`}
+							onclick={() => clearFilter(filter.key)}
+						>
+							{filter.label}<Icon name="close" size={12} />
+						</button>
+					{/each}
+				</div>
+				<button
+					type="button"
+					class="reset-action"
+					disabled={!hasResettableState}
+					onclick={resetAll}>Reset all</button
+				>
 			</div>
 		</div>
 
 		<div class="specimen-toolbar">
 			<label class="preview-text-control">
-				<span>Preview text</span>
+				<span class="sr-only">Preview text</span>
 				<Icon name="font" size={15} />
 				<input
 					type="text"
@@ -767,39 +924,29 @@
 					onclick={() => (specimenMode = 'custom')}>Your text</button
 				>
 			</div>
-			<label class="size-control">
-				<span>Size</span>
-				<input
-					type="range"
-					min="64"
-					max="156"
-					step="4"
-					value={specimenSize}
-					oninput={(event) => (specimenSize = Number(event.currentTarget.value))}
-				/>
-				<output>{specimenSize}px</output>
-			</label>
-			<div class="active-filter-summary" aria-live="polite">
-				{#if activeFilters.length}
-					{#each activeFilters as filter (filter.key)}
-						<button
-							type="button"
-							aria-label={`Remove ${filter.label} filter`}
-							onclick={() => clearFilter(filter.key)}
-						>
-							{filter.label}<Icon name="close" size={12} />
-						</button>
-					{/each}
-				{:else}
-					<span>All families</span>
-				{/if}
-			</div>
-			<button
-				type="button"
-				class="reset-action"
-				disabled={!hasResettableState}
-				onclick={resetAll}>Reset all</button
-			>
+			<RangeSlider
+				label="Size"
+				value={specimenSize}
+				min={64}
+				max={156}
+				step={4}
+				display={`${specimenSize}px`}
+				onChange={(value) => (specimenSize = value)}
+			/>
+			<RangeSlider
+				label="Weight"
+				value={specimenWeight}
+				min={100}
+				max={900}
+				step={100}
+				display={weightName(specimenWeight)}
+				valueText={`${weightName(specimenWeight)} ${specimenWeight}`}
+				valueWidth="68px"
+				onChange={(value) => {
+					specimenWeight = value;
+					showWeightNotes();
+				}}
+			/>
 		</div>
 	</section>
 
@@ -877,8 +1024,16 @@
 									<span
 										class="specimen-text"
 										style:font-family={previewFamilies[family.id]}
+										style:font-weight={renderWeight(family.id)}
 										>{specimenText(family)}</span
 									>
+									{#if substituteWeightNote(family.id)}
+										<small
+											class="weight-note"
+											class:visible={weightNotesVisible}
+											>{substituteWeightNote(family.id)}</small
+										>
+									{/if}
 								{:else if previewStatus(family.id) === 'error'}
 									<span class="specimen-text fallback"
 										>{specimenText(family)}</span
@@ -1176,10 +1331,9 @@
 	}
 
 	.primary-toolbar {
-		display: grid;
+		display: flex;
 		width: 100%;
 		min-width: 0;
-		grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.55fr);
 		align-items: center;
 		gap: var(--space-md);
 		padding: 10px 24px;
@@ -1190,7 +1344,7 @@
 	.preview-text-control {
 		display: grid;
 		min-width: 0;
-		grid-template-columns: auto auto minmax(0, 1fr);
+		grid-template-columns: auto minmax(0, 1fr);
 		align-items: center;
 		gap: var(--space-sm);
 		padding-left: 10px;
@@ -1233,18 +1387,22 @@
 		color: var(--color-subtle);
 	}
 
+	.search-control {
+		flex: 0 1 380px;
+	}
+
 	.filter-strip {
 		display: flex;
-		width: 100%;
 		min-width: 0;
+		flex: 1 1 auto;
+		flex-wrap: wrap;
 		align-items: center;
-		justify-content: flex-end;
 		gap: var(--space-sm);
 	}
 
 	.filter-strip :global(.filter-control) {
 		min-width: 0;
-		flex: 1 1 0;
+		flex: none;
 	}
 
 	.specimen-toolbar {
@@ -1292,40 +1450,22 @@
 		background: var(--color-selected);
 	}
 
-	.size-control {
-		display: grid;
-		flex: none;
-		grid-template-columns: auto 96px 48px;
-		align-items: center;
-		gap: var(--space-sm);
-		color: var(--color-subtle);
-		font-size: var(--text-micro);
-	}
-
-	.size-control input {
-		accent-color: var(--color-accent);
-	}
-
-	.size-control output {
-		color: var(--color-muted);
-		font-size: var(--text-label);
-		font-variant-numeric: tabular-nums;
-	}
-
+	/* The chips take their own line rather than shrink into illegibility: they are the
+	   only place an active filter is named now that the trigger just shows a count. */
 	.active-filter-summary {
 		display: flex;
 		min-width: 0;
-		flex: 1;
+		flex: 1 1 260px;
 		align-items: center;
-		justify-content: flex-end;
 		gap: 6px;
 		overflow-x: auto;
+		scrollbar-width: none;
 	}
 
-	.active-filter-summary > span {
-		color: var(--color-subtle);
-		font-size: var(--text-label);
-		white-space: nowrap;
+	/* With no chips the region still has to exist for its live announcements, but it must
+	   not claim a 260px basis and push Reset all onto a line of its own. */
+	.active-filter-summary.empty {
+		flex: 0 0 0;
 	}
 
 	.active-filter-summary button {
@@ -1351,6 +1491,7 @@
 	.reset-action {
 		height: 34px;
 		flex: none;
+		margin-left: auto;
 		padding: 0;
 		border: 0;
 		color: var(--color-muted);
@@ -1500,6 +1641,23 @@
 		color: var(--color-subtle);
 		font-family: Geist, 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
 		font-size: var(--text-micro);
+	}
+
+	/* The loading and fallback captions above stay put; only the weight note comes and goes. */
+	.specimen-canvas > small.weight-note {
+		opacity: 0;
+		transition: opacity 420ms cubic-bezier(0.16, 1, 0.3, 1);
+		pointer-events: none;
+	}
+
+	.specimen-canvas > small.weight-note.visible {
+		opacity: 1;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.specimen-canvas > small.weight-note {
+			transition: none;
+		}
 	}
 
 	.specimen-text {
@@ -1876,25 +2034,20 @@
 
 	@media (max-width: 1240px) {
 		.primary-toolbar {
-			grid-template-columns: 1fr;
+			flex-wrap: wrap;
+			gap: var(--space-sm);
+		}
+
+		.search-control {
+			flex: 1 1 100%;
 		}
 
 		.filter-strip {
-			justify-content: flex-start;
-			overflow-x: auto;
-		}
-
-		.filter-strip :global(.filter-control) {
-			min-width: 142px;
-			flex: 0 0 auto;
+			width: 100%;
 		}
 
 		.preview-text-control {
 			width: min(310px, 32vw);
-		}
-
-		.active-filter-summary {
-			display: none;
 		}
 	}
 
@@ -1957,21 +2110,6 @@
 		.primary-toolbar,
 		.specimen-toolbar {
 			padding-inline: 12px;
-		}
-
-		.filter-strip {
-			flex-wrap: wrap;
-			overflow: visible;
-		}
-
-		.filter-strip :global(.filter-control) {
-			min-width: min(142px, 100%);
-			flex: 1 1 142px;
-		}
-
-		.size-control {
-			grid-template-columns: auto minmax(80px, 1fr) 44px;
-			width: 100%;
 		}
 
 		.catalogue-heading {

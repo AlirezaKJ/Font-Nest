@@ -55,6 +55,7 @@
 		type GlyphSetScope
 	} from '$lib/glyph-categories';
 	import { contextMenu } from '$lib/context-menu/action';
+	import { familyOrigin, fontOrigin, isSystemOnly } from '$lib/fonts/font-origin';
 	import { faceContextMenu, glyphContextMenu } from '$lib/context-menu/entries';
 	import {
 		exportFontFaceParserJson,
@@ -564,15 +565,26 @@
 							{family.name}
 						</h1>
 						<ul class="fact-chips">
-							{#each family.sources as source (source)}
-								<li>{source}</li>
-							{/each}
+							<li
+								class:chip-strong={!isSystemOnly(family.origins)}
+								title={familyOrigin(family.origins).description}
+							>
+								{familyOrigin(family.origins).label}
+							</li>
 							{#each family.formats as format (format)}
 								<li>{format}</li>
 							{/each}
 							<li>{family.faceCount} {family.faceCount === 1 ? 'face' : 'faces'}</li>
 							<li>{family.fileCount} {family.fileCount === 1 ? 'file' : 'files'}</li>
 							<li>{family.monospaced ? 'Monospaced' : 'Proportional'}</li>
+							{#if family.variable}
+								<li
+									class="chip-strong"
+									title="One file covers a range of weights or widths."
+								>
+									Variable
+								</li>
+							{/if}
 							{#if family.hasConflict}
 								<li class="chip-warning">
 									<Icon name="alert" size={12} /> Conflict
@@ -1355,6 +1367,7 @@
 							<span role="columnheader">Style</span>
 							<span role="columnheader">Weight</span>
 							<span role="columnheader">File</span>
+							<span role="columnheader">Origin</span>
 						</div>
 						{#each family.faces as face (face.id)}
 							<div
@@ -1366,6 +1379,8 @@
 								<span role="cell" class="face-style">
 									{face.styleName || weightName(face.weight)}
 									{#if face.style === 'italic'}<em>Italic</em>{/if}
+									{#if face.variable}<small class="face-variable">Variable</small
+										>{/if}
 									{#if selectedFace?.id === face.id}<small
 											class="selected-face-label">Selected</small
 										>{/if}
@@ -1373,6 +1388,12 @@
 								<span role="cell" class="face-weight">{face.weight}</span>
 								<span role="cell" class="face-file" title={face.fileName}
 									>{face.fileName}</span
+								>
+								<span
+									role="cell"
+									class="face-origin"
+									title={fontOrigin(face.origin).description}
+									>{fontOrigin(face.origin).label}</span
 								>
 							</div>
 						{/each}
@@ -1553,6 +1574,10 @@
 		font-size: var(--text-micro);
 		font-weight: 600;
 		white-space: nowrap;
+	}
+
+	.fact-chips .chip-strong {
+		color: var(--color-text);
 	}
 
 	.fact-chips .chip-warning {
@@ -2626,11 +2651,25 @@
 	.faces-head,
 	.faces-row {
 		display: grid;
-		grid-template-columns: minmax(120px, 1fr) 70px minmax(0, 1.4fr);
+		grid-template-columns: minmax(120px, 1fr) 70px minmax(0, 1.4fr) minmax(96px, 0.7fr);
 		gap: 16px;
 		align-items: center;
 		padding: 10px 0;
 		border-bottom: 1px solid var(--color-border);
+	}
+
+	.face-variable {
+		color: var(--color-muted);
+		font-size: var(--text-micro);
+		font-weight: 650;
+	}
+
+	.face-origin {
+		overflow: hidden;
+		color: var(--color-muted);
+		font-size: var(--text-micro);
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.faces-head {
@@ -2992,7 +3031,7 @@
 
 		.faces-head,
 		.faces-row {
-			grid-template-columns: 1fr 56px;
+			grid-template-columns: 1fr 56px minmax(76px, auto);
 		}
 
 		.face-file {

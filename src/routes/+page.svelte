@@ -4,6 +4,7 @@
 
 	import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
 	import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
+	import type { FontOrigin } from '$lib/bindings/FontOrigin';
 	import type { ValidatedLocalFont } from '$lib/bindings/ValidatedLocalFont';
 	import { checkForUpdates } from '$lib/app-updater';
 	import { getConflictDestination } from '$lib/conflict-navigation';
@@ -16,9 +17,11 @@
 		type DiscoverFilterOption
 	} from '$lib/components/DiscoverFilterMenu.svelte';
 	import DiscoverView from '$lib/components/DiscoverView.svelte';
+	import FilterPopover, { type FilterGroup } from '$lib/components/FilterPopover.svelte';
 	import FontPreviewView from '$lib/components/FontPreviewView.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import PatchNotesView from '$lib/components/PatchNotesView.svelte';
+	import RangeSlider from '$lib/components/RangeSlider.svelte';
 	import SettingsView, {
 		type DensityPreference,
 		type ThemePreference
@@ -31,6 +34,12 @@
 		familyContextMenu,
 		glyphContextMenu
 	} from '$lib/context-menu/entries';
+	import {
+		familyOrigin,
+		FONT_ORIGIN_ORDER,
+		fontOrigin,
+		isSystemOnly
+	} from '$lib/fonts/font-origin';
 	import { importLocalFontPreview } from '$lib/fonts/local-fonts';
 	import { hasUnseenRelease } from '$lib/release-notes/loader';
 	import { reorderIds, type ReorderPosition } from '$lib/reorder';
@@ -41,6 +50,19 @@
 	const SKELETON_ROWS = [0, 1, 2, 3];
 	const DEFAULT_PREVIEW = 'What is life but a fevered dream';
 	const DEFAULT_SPECIMEN_SIZE = 96;
+	const DEFAULT_SPECIMEN_WEIGHT = 400;
+	const WEIGHT_NOTE_LINGER_MS = 2600;
+	const WEIGHT_NAMES: Record<number, string> = {
+		100: 'Thin',
+		200: 'Extralight',
+		300: 'Light',
+		400: 'Regular',
+		500: 'Medium',
+		600: 'Semibold',
+		700: 'Bold',
+		800: 'Extrabold',
+		900: 'Black'
+	};
 	const MAX_DETAIL_FACES = 12;
 	const UPDATE_CHECK_DELAY_MS = 8_000;
 	const PREFERENCES_KEY = 'fontnest.preferences.v1';
@@ -67,6 +89,15 @@
 		{ value: 'proportional', label: 'Proportional' },
 		{ value: 'monospaced', label: 'Monospaced' }
 	];
+	const TECHNOLOGY_OPTIONS: DiscoverFilterOption[] = [
+		{ value: 'all', label: 'Any technology' },
+		{
+			value: 'variable',
+			label: 'Variable',
+			description: 'One file covers a range of weights or widths'
+		},
+		{ value: 'static', label: 'Static', description: 'One file per style' }
+	];
 	const STATUS_OPTIONS: DiscoverFilterOption[] = [
 		{ value: 'all', label: 'Any status' },
 		{ value: 'conflict', label: 'Conflicts only', description: 'Families with duplicate files' }
@@ -80,7 +111,7 @@
 
 	type CatalogueMode = 'native' | 'browser';
 	type SpecimenMode = 'names' | 'custom';
-	type LibraryFilterKey = 'source' | 'format' | 'spacing' | 'status' | 'sort';
+	type LibraryFilterKey = 'origin' | 'format' | 'technology' | 'spacing' | 'status' | 'sort';
 	type ActiveLibraryFilter = { key: LibraryFilterKey; label: string };
 	type Toast = { message: string; tone: 'success' | 'error' };
 
@@ -104,13 +135,17 @@
 	let errorMessage = $state('');
 	let selectedFamilyId = $state<string | null>(null);
 	let search = $state('');
-	let sourceFilter = $state('all');
+	let originFilter = $state('all');
 	let formatFilter = $state('all');
+	let technologyFilter = $state('all');
 	let spacingFilter = $state('all');
 	let statusFilter = $state('all');
 	let sortOrder = $state('name-asc');
 	let specimenMode = $state<SpecimenMode>('names');
 	let specimenSize = $state(DEFAULT_SPECIMEN_SIZE);
+	let specimenWeight = $state(DEFAULT_SPECIMEN_WEIGHT);
+	let weightNotesVisible = $state(false);
+	let weightNoteTimer: ReturnType<typeof setTimeout> | undefined;
 	let displayLimit = $state(PAGE_SIZE);
 	let previewText = $state(DEFAULT_PREVIEW);
 	let previewSize = $state(64);
@@ -126,13 +161,15 @@
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
 	let updateCheckTimer: ReturnType<typeof setTimeout> | undefined;
 
-	let sourceOptions = $derived.by<DiscoverFilterOption[]>(() => {
-		const values = [
-			...new Set(catalogue?.families.flatMap((family) => family.sources) ?? [])
-		].sort();
+	let originOptions = $derived.by<DiscoverFilterOption[]>(() => {
+		const present = new Set(catalogue?.families.flatMap((family) => family.origins) ?? []);
 		return [
-			{ value: 'all', label: 'All sources' },
-			...values.map((value) => ({ value, label: value }))
+			{ value: 'all', label: 'Anywhere' },
+			...FONT_ORIGIN_ORDER.filter((origin) => present.has(origin)).map((origin) => ({
+				value: origin,
+				label: fontOrigin(origin).label,
+				description: fontOrigin(origin).description
+			}))
 		];
 	});
 
@@ -146,26 +183,37 @@
 		];
 	});
 
-	let activeFilters = $derived.by<ActiveLibraryFilter[]>(() => {
-		const filters: ActiveLibraryFilter[] = [];
-		if (sourceFilter !== 'all')
-			filters.push({ key: 'source', label: optionLabel(sourceOptions, sourceFilter) });
-		if (formatFilter !== 'all')
-			filters.push({ key: 'format', label: optionLabel(formatOptions, formatFilter) });
-		if (spacingFilter !== 'all')
-			filters.push({ key: 'spacing', label: optionLabel(SPACING_OPTIONS, spacingFilter) });
-		if (statusFilter !== 'all')
-			filters.push({ key: 'status', label: optionLabel(STATUS_OPTIONS, statusFilter) });
-		if (sortOrder !== 'name-asc')
-			filters.push({ key: 'sort', label: optionLabel(SORT_OPTIONS, sortOrder) });
-		return filters;
-	});
+	let filterGroups = $derived.by<FilterGroup[]>(() => [
+		{ key: 'origin', label: 'Origin', value: originFilter, options: originOptions },
+		{ key: 'format', label: 'Format', value: formatFilter, options: formatOptions },
+		{
+			key: 'technology',
+			label: 'Technology',
+			value: technologyFilter,
+			options: TECHNOLOGY_OPTIONS
+		},
+		{ key: 'spacing', label: 'Spacing', value: spacingFilter, options: SPACING_OPTIONS },
+		{ key: 'status', label: 'Status', value: statusFilter, options: STATUS_OPTIONS }
+	]);
+
+	// The trigger no longer shows each filter's value, so these chips are the only place
+	// active choices are named. Sort stays out of them: it always has a visible value.
+	let activeFilters = $derived.by<ActiveLibraryFilter[]>(() =>
+		filterGroups
+			.filter((group) => group.value !== 'all')
+			.map((group) => ({
+				key: group.key as LibraryFilterKey,
+				label: optionLabel(group.options, group.value)
+			}))
+	);
 
 	let hasResettableState = $derived(
 		Boolean(search) ||
 			activeFilters.length > 0 ||
+			sortOrder !== 'name-asc' ||
 			specimenMode !== 'names' ||
-			specimenSize !== DEFAULT_SPECIMEN_SIZE
+			specimenSize !== DEFAULT_SPECIMEN_SIZE ||
+			specimenWeight !== DEFAULT_SPECIMEN_WEIGHT
 	);
 
 	let filteredFamilies = $derived.by(() => {
@@ -176,13 +224,21 @@
 			.filter(Boolean);
 
 		const matching = (catalogue?.families ?? []).filter((family) => {
-			const searchable = [family.name, ...family.styles, ...family.sources, ...family.formats]
+			const searchable = [
+				family.name,
+				...family.styles,
+				...family.origins.map((origin) => fontOrigin(origin).label),
+				...family.formats,
+				family.variable ? 'Variable' : 'Static'
+			]
 				.join(' ')
 				.toLocaleLowerCase();
 			return (
 				terms.every((term) => searchable.includes(term)) &&
-				(sourceFilter === 'all' || family.sources.includes(sourceFilter)) &&
+				(originFilter === 'all' || family.origins.includes(originFilter as FontOrigin)) &&
 				(formatFilter === 'all' || family.formats.includes(formatFilter)) &&
+				(technologyFilter === 'all' ||
+					family.variable === (technologyFilter === 'variable')) &&
 				(spacingFilter === 'all' ||
 					family.monospaced === (spacingFilter === 'monospaced')) &&
 				(statusFilter === 'all' || family.hasConflict)
@@ -433,6 +489,10 @@
 		);
 	}
 
+	function weightName(weight: number): string {
+		return WEIGHT_NAMES[weight] ?? String(weight);
+	}
+
 	function selectFamily(familyId: string) {
 		selectedFamilyId = familyId;
 		const family = catalogue?.families.find((candidate) => candidate.id === familyId);
@@ -540,8 +600,9 @@
 	}
 
 	function updateFilter(key: LibraryFilterKey, value: string) {
-		if (key === 'source') sourceFilter = value;
+		if (key === 'origin') originFilter = value;
 		if (key === 'format') formatFilter = value;
+		if (key === 'technology') technologyFilter = value;
 		if (key === 'spacing') spacingFilter = value;
 		if (key === 'status') statusFilter = value;
 		if (key === 'sort') sortOrder = value;
@@ -553,19 +614,21 @@
 	}
 
 	function clearFilters() {
-		sourceFilter = 'all';
+		originFilter = 'all';
 		formatFilter = 'all';
+		technologyFilter = 'all';
 		spacingFilter = 'all';
 		statusFilter = 'all';
-		sortOrder = 'name-asc';
 		displayLimit = PAGE_SIZE;
 	}
 
 	function resetAll() {
 		search = '';
 		clearFilters();
+		sortOrder = 'name-asc';
 		specimenMode = 'names';
 		specimenSize = DEFAULT_SPECIMEN_SIZE;
+		specimenWeight = DEFAULT_SPECIMEN_WEIGHT;
 	}
 
 	function optionLabel(options: DiscoverFilterOption[], value: string): string {
@@ -584,8 +647,35 @@
 		return `"${name.replace(/["\\;\n\r]/g, '')}", system-ui, sans-serif`;
 	}
 
+	// A variable family covers a continuous range from one file, and the weights the
+	// catalogue lists for it are only the named instances it ships (often just 400).
+	// Snapping to those would pin the whole slider to one weight, so the requested weight
+	// goes straight through and the font's own wght axis clamps it.
+	function drawnWeight(family: FontFamilySummary): number {
+		return family.variable ? specimenWeight : nearestWeight(family.weights, specimenWeight);
+	}
+
 	function familyPreviewStyle(family: FontFamilySummary): string {
-		return `font-family: ${safeFontStack(family.name)}; font-weight: ${nearestWeight(family.weights, 400)};`;
+		return `font-family: ${safeFontStack(family.name)}; font-weight: ${drawnWeight(family)};`;
+	}
+
+	/**
+	 * Names the weight a family is actually drawn at when it owns no style at the weight the
+	 * slider asks for, so a row that cannot follow the slider says why rather than looking stuck.
+	 */
+	function substituteWeightNote(family: FontFamilySummary): string | null {
+		const drawn = drawnWeight(family);
+		return drawn === specimenWeight ? null : `Closest cut: ${weightName(drawn)}`;
+	}
+
+	/**
+	 * The note answers a question the user just asked by moving the slider, so it shows itself
+	 * then gets out of the way rather than sitting on every row that cannot follow the weight.
+	 */
+	function showWeightNotes() {
+		weightNotesVisible = true;
+		if (weightNoteTimer) clearTimeout(weightNoteTimer);
+		weightNoteTimer = setTimeout(() => (weightNotesVisible = false), WEIGHT_NOTE_LINGER_MS);
 	}
 
 	function faceSpecimenStyle(family: FontFamilySummary, weight: number, style: string): string {
@@ -799,44 +889,23 @@
 				>
 					<div class="primary-toolbar">
 						<label class="search-control">
-							<span>Search</span>
+							<span class="sr-only">Search</span>
 							<Icon name="search" size={15} />
 							<input
 								data-font-search
 								type="search"
-								placeholder="Families, styles, sources"
+								placeholder="Families, styles, origins"
 								value={search}
 								oninput={(event) => updateSearch(event.currentTarget.value)}
 							/>
 						</label>
 						<div class="filter-strip">
-							<DiscoverFilterMenu
-								id="library-source"
-								label="Source"
-								value={sourceFilter}
-								options={sourceOptions}
-								onChange={(value) => updateFilter('source', value)}
-							/>
-							<DiscoverFilterMenu
-								id="library-format"
-								label="Format"
-								value={formatFilter}
-								options={formatOptions}
-								onChange={(value) => updateFilter('format', value)}
-							/>
-							<DiscoverFilterMenu
-								id="library-spacing"
-								label="Spacing"
-								value={spacingFilter}
-								options={SPACING_OPTIONS}
-								onChange={(value) => updateFilter('spacing', value)}
-							/>
-							<DiscoverFilterMenu
-								id="library-status"
-								label="Status"
-								value={statusFilter}
-								options={STATUS_OPTIONS}
-								onChange={(value) => updateFilter('status', value)}
+							<FilterPopover
+								id="library-filters"
+								groups={filterGroups}
+								onChange={(key, value) =>
+									updateFilter(key as LibraryFilterKey, value)}
+								onClear={clearFilters}
 							/>
 							<DiscoverFilterMenu
 								id="library-sort"
@@ -845,12 +914,33 @@
 								options={SORT_OPTIONS}
 								onChange={(value) => updateFilter('sort', value)}
 							/>
+							<div
+								class:empty={activeFilters.length === 0}
+								class="active-filter-summary"
+								aria-live="polite"
+							>
+								{#each activeFilters as filter (filter.key)}
+									<button
+										type="button"
+										aria-label={`Remove ${filter.label} filter`}
+										onclick={() => clearFilter(filter.key)}
+									>
+										{filter.label}<Icon name="close" size={12} />
+									</button>
+								{/each}
+							</div>
+							<button
+								type="button"
+								class="reset-action"
+								disabled={!hasResettableState}
+								onclick={resetAll}>Reset all</button
+							>
 						</div>
 					</div>
 
 					<div class="specimen-toolbar">
 						<label class="preview-text-control">
-							<span>Preview text</span>
+							<span class="sr-only">Preview text</span>
 							<Icon name="font" size={15} />
 							<input
 								type="text"
@@ -874,40 +964,29 @@
 								onclick={() => (specimenMode = 'custom')}>Your text</button
 							>
 						</div>
-						<label class="size-control">
-							<span>Size</span>
-							<input
-								type="range"
-								min="48"
-								max="148"
-								step="4"
-								value={specimenSize}
-								oninput={(event) =>
-									(specimenSize = Number(event.currentTarget.value))}
-							/>
-							<output>{specimenSize}px</output>
-						</label>
-						<div class="active-filter-summary" aria-live="polite">
-							{#if activeFilters.length}
-								{#each activeFilters as filter (filter.key)}
-									<button
-										type="button"
-										aria-label={`Remove ${filter.label} filter`}
-										onclick={() => clearFilter(filter.key)}
-									>
-										{filter.label}<Icon name="close" size={12} />
-									</button>
-								{/each}
-							{:else}
-								<span>All families</span>
-							{/if}
-						</div>
-						<button
-							type="button"
-							class="reset-action"
-							disabled={!hasResettableState}
-							onclick={resetAll}>Reset all</button
-						>
+						<RangeSlider
+							label="Size"
+							value={specimenSize}
+							min={48}
+							max={148}
+							step={4}
+							display={`${specimenSize}px`}
+							onChange={(value) => (specimenSize = value)}
+						/>
+						<RangeSlider
+							label="Weight"
+							value={specimenWeight}
+							min={100}
+							max={900}
+							step={100}
+							display={weightName(specimenWeight)}
+							valueText={`${weightName(specimenWeight)} ${specimenWeight}`}
+							valueWidth="68px"
+							onChange={(value) => {
+								specimenWeight = value;
+								showWeightNotes();
+							}}
+						/>
 					</div>
 				</section>
 
@@ -982,8 +1061,11 @@
 									>
 										<span class="family-line">
 											<strong>{family.name}</strong>
-											<span class="meta-source"
-												>{family.sources.join(' · ')}</span
+											<span
+												class="meta-origin"
+												class:is-added={!isSystemOnly(family.origins)}
+												title={familyOrigin(family.origins).description}
+												>{familyOrigin(family.origins).label}</span
 											>
 											<span class="meta-format"
 												>{family.formats.join(' · ')}</span
@@ -997,6 +1079,13 @@
 													? 'Monospaced'
 													: 'Proportional'}</span
 											>
+											{#if family.variable}
+												<span
+													class="meta-variable"
+													title="One file covers a range of weights or widths."
+													>Variable</span
+												>
+											{/if}
 											{#if family.hasConflict}
 												<span class="conflict-label"
 													><Icon name="alert" size={12} /> Conflict</span
@@ -1015,6 +1104,11 @@
 										>
 											<span class="specimen-text">{specimenText(family)}</span
 											>
+											{#if substituteWeightNote(family)}
+												<small class:visible={weightNotesVisible}
+													>{substituteWeightNote(family)}</small
+												>
+											{/if}
 										</span>
 									</button>
 
@@ -1032,7 +1126,12 @@
 													<p>
 														{family.formats.join(' · ')} · {family.monospaced
 															? 'Monospaced'
-															: 'Proportional'}
+															: 'Proportional'} · {family.variable
+															? 'Variable'
+															: 'Static'}
+													</p>
+													<p class="detail-origin">
+														{familyOrigin(family.origins).description}
 													</p>
 												</div>
 												<div class="detail-actions">
@@ -1070,7 +1169,14 @@
 													>
 														<span class="face-meta">
 															<strong>{face.styleName}</strong>
-															<small>{face.fileName}</small>
+															<small>
+																{face.fileName}{family.origins
+																	.length > 1
+																	? ` · ${fontOrigin(face.origin).label}`
+																	: ''}{face.variable
+																	? ' · Variable'
+																	: ''}
+															</small>
 														</span>
 														<span
 															class="face-specimen"
@@ -1322,10 +1428,9 @@
 	}
 
 	.primary-toolbar {
-		display: grid;
+		display: flex;
 		width: 100%;
 		min-width: 0;
-		grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.55fr);
 		align-items: center;
 		gap: var(--space-md);
 		padding: 10px 24px;
@@ -1336,7 +1441,7 @@
 	.preview-text-control {
 		display: grid;
 		min-width: 0;
-		grid-template-columns: auto auto minmax(0, 1fr);
+		grid-template-columns: auto minmax(0, 1fr);
 		align-items: center;
 		gap: var(--space-sm);
 		padding-left: 10px;
@@ -1379,18 +1484,22 @@
 		color: var(--color-subtle);
 	}
 
+	.search-control {
+		flex: 0 1 380px;
+	}
+
 	.filter-strip {
 		display: flex;
-		width: 100%;
 		min-width: 0;
+		flex: 1 1 auto;
+		flex-wrap: wrap;
 		align-items: center;
-		justify-content: flex-end;
 		gap: var(--space-sm);
 	}
 
 	.filter-strip :global(.filter-control) {
 		min-width: 0;
-		flex: 1 1 0;
+		flex: none;
 	}
 
 	.specimen-toolbar {
@@ -1438,40 +1547,22 @@
 		background: var(--color-selected);
 	}
 
-	.size-control {
-		display: grid;
-		flex: none;
-		grid-template-columns: auto 96px 48px;
-		align-items: center;
-		gap: var(--space-sm);
-		color: var(--color-subtle);
-		font-size: var(--text-micro);
-	}
-
-	.size-control input {
-		accent-color: var(--color-accent);
-	}
-
-	.size-control output {
-		color: var(--color-muted);
-		font-size: var(--text-label);
-		font-variant-numeric: tabular-nums;
-	}
-
+	/* The chips take their own line rather than shrink into illegibility: they are the
+	   only place an active filter is named now that the trigger just shows a count. */
 	.active-filter-summary {
 		display: flex;
 		min-width: 0;
-		flex: 1;
+		flex: 1 1 260px;
 		align-items: center;
-		justify-content: flex-end;
 		gap: 6px;
 		overflow-x: auto;
+		scrollbar-width: none;
 	}
 
-	.active-filter-summary > span {
-		color: var(--color-subtle);
-		font-size: var(--text-label);
-		white-space: nowrap;
+	/* With no chips the region still has to exist for its live announcements, but it must
+	   not claim a 260px basis and push Reset all onto a line of its own. */
+	.active-filter-summary.empty {
+		flex: 0 0 0;
 	}
 
 	.active-filter-summary button {
@@ -1497,6 +1588,7 @@
 	.reset-action {
 		height: 34px;
 		flex: none;
+		margin-left: auto;
 		padding: 0;
 		border: 0;
 		color: var(--color-muted);
@@ -1599,6 +1691,26 @@
 		white-space: nowrap;
 	}
 
+	.meta-origin {
+		color: var(--color-subtle);
+	}
+
+	/* Most libraries are mostly system fonts, so the fonts somebody installed carry the
+	   emphasis and stay findable while scrolling. */
+	.meta-origin.is-added {
+		color: var(--color-text);
+		font-weight: 650;
+	}
+
+	.meta-variable {
+		color: var(--color-text);
+		font-weight: 650;
+	}
+
+	.detail-origin {
+		color: var(--color-subtle);
+	}
+
 	.conflict-label {
 		display: inline-flex;
 		align-items: center;
@@ -1624,11 +1736,37 @@
 	}
 
 	.specimen-canvas {
+		position: relative;
 		display: flex;
 		min-height: calc(var(--specimen-size) * 1.42 + 16px);
 		align-items: center;
 		padding: 14px 24px;
 		overflow: hidden;
+	}
+
+	/* The canvas carries the family's own font so the specimen inherits it; the note has to
+	   opt back out or it would be set in the typeface it is describing. */
+	.specimen-canvas > small {
+		position: absolute;
+		right: 24px;
+		bottom: 10px;
+		color: var(--color-subtle);
+		font-family: Geist, 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+		font-size: var(--text-micro);
+		font-weight: 400;
+		opacity: 0;
+		transition: opacity 420ms cubic-bezier(0.16, 1, 0.3, 1);
+		pointer-events: none;
+	}
+
+	.specimen-canvas > small.visible {
+		opacity: 1;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.specimen-canvas > small {
+			transition: none;
+		}
 	}
 
 	.specimen-text {
@@ -2005,7 +2143,8 @@
 	}
 
 	@container (max-width: 680px) {
-		.meta-source,
+		.meta-origin,
+		.meta-variable,
 		.meta-count {
 			display: none;
 		}
@@ -2042,17 +2181,16 @@
 		}
 
 		.primary-toolbar {
-			grid-template-columns: 1fr;
+			flex-wrap: wrap;
+			gap: var(--space-sm);
+		}
+
+		.search-control {
+			flex: 1 1 100%;
 		}
 
 		.filter-strip {
-			justify-content: flex-start;
-			overflow-x: auto;
-		}
-
-		.filter-strip :global(.filter-control) {
-			min-width: 132px;
-			flex: 0 0 auto;
+			width: 100%;
 		}
 
 		.specimen-toolbar {
@@ -2062,10 +2200,6 @@
 		.preview-text-control {
 			width: auto;
 			flex: 1 1 240px;
-		}
-
-		.active-filter-summary {
-			display: none;
 		}
 
 		.catalogue-heading,
@@ -2096,11 +2230,6 @@
 	@media (max-width: 520px) {
 		.catalogue-summary {
 			max-width: 32ch;
-		}
-
-		.size-control {
-			grid-template-columns: auto minmax(80px, 1fr) 44px;
-			width: 100%;
 		}
 
 		.catalogue-heading > span {

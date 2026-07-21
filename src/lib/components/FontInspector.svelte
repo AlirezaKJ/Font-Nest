@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
+	import { familyOrigin, isSystemOnly } from '$lib/fonts/font-origin';
 
 	let {
 		family,
@@ -42,11 +43,17 @@
 				<p class="section-label">Inspector</p>
 				<h2>{family.name}</h2>
 			</div>
-			{#if family.hasConflict}
-				<span class="state-chip warning">Potential conflict</span>
-			{:else}
-				<span class="state-chip">{family.sources.join(' · ')}</span>
-			{/if}
+			<div class="header-chips">
+				{#if family.hasConflict}
+					<span class="state-chip warning">Potential conflict</span>
+				{/if}
+				<span
+					class="state-chip"
+					class:strong={!isSystemOnly(family.origins)}
+					title={familyOrigin(family.origins).description}
+					>{familyOrigin(family.origins).label}</span
+				>
+			</div>
 		</header>
 
 		<div class="specimen" style={specimenStyle} aria-label={`${family.name} specimen`}>Ag</div>
@@ -99,12 +106,20 @@
 					<dd>{family.fileCount}</dd>
 				</div>
 				<div>
+					<dt>Origin</dt>
+					<dd>{familyOrigin(family.origins).label}</dd>
+				</div>
+				<div>
 					<dt>Format</dt>
 					<dd>{family.formats.join(', ')}</dd>
 				</div>
 				<div>
 					<dt>Spacing</dt>
 					<dd>{family.monospaced ? 'Monospaced' : 'Proportional'}</dd>
+				</div>
+				<div>
+					<dt>Technology</dt>
+					<dd>{family.variable ? 'Variable' : 'Static'}</dd>
 				</div>
 			</dl>
 		</section>
@@ -194,6 +209,17 @@
 
 	.state-chip.warning {
 		color: var(--color-warning);
+	}
+
+	.state-chip.strong {
+		color: var(--color-text);
+	}
+
+	.header-chips {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 6px;
 	}
 
 	.specimen {

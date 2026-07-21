@@ -10,6 +10,47 @@ a bundled copy when you are offline.
 
 ## [Unreleased]
 
+### Added
+
+- Every font now says where it came from. Fonts that ship with your operating system are labelled
+  System font, the rest are labelled Installed (your account) or All users, and a family whose
+  styles come from more than one place reads Mixed sources. The label shows up in the library list,
+  the inspector, the font preview page, and the Conflicts view, which now also tells you when part
+  of a duplicated family belongs to the operating system and should be left alone. The library's
+  Source filter is now an Origin filter, so you can narrow the list to just the fonts you installed.
+- Variable fonts are marked as such in the library, the font preview page, and the style lists, so
+  you can tell at a glance which families cover a range of weights or widths from one file. A new
+  Technology filter narrows the library to variable or static families, and searching for
+  "variable" finds them too.
+
+- Discover can sort by Trending or Most popular, so you can see what the rest of the world is
+  picking up instead of scrolling an alphabetical wall of 1,928 families. Trending is now what
+  you land on when you open Discover.
+
+- Discover has a Weight slider too, and it fetches what it needs to be honest about it. A family
+  that ships a variable file moves through its real weight range. A family that ships one file per
+  weight downloads the cut closest to where you put the slider, and if it has no cut that close,
+  the specimen says which one you are looking at instead of letting the web view fake a bold.
+- The library toolbar has a Weight slider next to Size. Drag it and every specimen in the list
+  redraws at that weight. Variable families move through their whole range, families that only
+  own certain weights fall back to the closest one they have and say which, and Reset all puts it
+  back to Regular. That "Closest cut" note shows up as you drag and fades out once you have read
+  it, in both Library and Discover.
+
+### Changed
+
+- The sliders in FontNest are drawn by the app now instead of the web view, so they match
+  everything around them: a slimmer track that fills in as you drag, a round handle that grows
+  slightly under the pointer, and the same colors in light and dark.
+- The row of filter dropdowns in Library and Discover is now a single Filters button. It opens one
+  panel with every filter grouped by name, so you can set a few in one visit instead of opening
+  five menus, and the button carries a small count of how many are on. Sort keeps its own control
+  next to it. The chips naming your active filters moved up beside the search box, where they used
+  to be pushed off screen on narrower windows, and each one still removes its filter when clicked.
+- The search and preview text boxes in Library and Discover dropped their "Search" and "Preview
+  text" captions. The icon and the placeholder already said what they were, and the room goes to
+  the fields instead. Screen readers still announce both.
+
 ## [0.1.3] - 2026-07-21
 
 ### Added
