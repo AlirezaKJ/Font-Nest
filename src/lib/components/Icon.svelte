@@ -18,6 +18,7 @@
 		| 'monitor'
 		| 'more'
 		| 'paste'
+		| 'plus'
 		| 'refresh'
 		| 'restore'
 		| 'search'
@@ -88,6 +89,8 @@
 		<path d="M12 9v3.5M12 16h.01" />
 	{:else if name === 'close'}
 		<path d="m7 7 10 10M17 7 7 17" />
+	{:else if name === 'plus'}
+		<path d="M12 5.5v13M5.5 12h13" />
 	{:else if name === 'chevron'}
 		<path d="m9 6 6 6-6 6" />
 	{:else if name === 'more'}

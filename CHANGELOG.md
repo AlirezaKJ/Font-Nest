@@ -10,6 +10,8 @@ a bundled copy when you are offline.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-07
+
 ### Added
 
 - Every font now says where it came from. Fonts that ship with your operating system are labelled
@@ -36,9 +38,36 @@ a bundled copy when you are offline.
   own certain weights fall back to the closest one they have and say which, and Reset all puts it
   back to Regular. That "Closest cut" note shows up as you drag and fades out once you have read
   it, in both Library and Discover.
+- The font preview page now shows a variable font as a range of weights instead of a single row.
+  It samples the weight axis at the usual named steps (Thin through Black) that fall inside the
+  font's range, plus the exact ends, and draws a real specimen at each one. Fonts that carry other
+  axes such as width, optical size, or slant also get a row of sliders that redraw the big sample
+  live, with a button to put every axis back to its default. Dragging the weight, or any axis,
+  now moves the type smoothly through the whole range instead of jumping between fixed cuts,
+  because the preview reads the font's own file rather than the handful of named instances
+  Windows hands the web view.
 
 ### Changed
 
+- The controls at the top of the font preview page now follow whatever you are reading. Over the
+  big sample they set its size and weight; in the styles the same bar switches to row size and
+  drives those rows; in the characters it resizes the glyph grid and keeps the Basic and Full set
+  toggle in reach. The slider is always changing something on screen instead of sitting dead, and
+  the controls that used to sit in a section heading no longer scroll out of reach as you read.
+
+- Every row in the library has a small plus button now. It drops the family straight into your
+  saved previews in the sidebar without opening anything or losing your place, and turns into a
+  tick you can click again to take it back out.
+- Opening a family in the library shows something worth reading. The panel used to repeat the
+  origin, format, style count and spacing already printed on the row above it, then finish with a
+  grid of fifteen letters that told you nothing about a font's coverage. Both are gone. What is
+  left is a line of the things the row cannot fit (the weight range the family covers, how many
+  files it is made of, where it came from) and the list of styles, which now sets every style in
+  the same words. Comparing Light against Black used to mean comparing two different words at two
+  different widths; now the cuts line up and you can actually see the difference. The panel opens
+  and closes with a short slide, and holds still if you have reduced motion turned on.
+- The full character map still lives in the font preview page, and families with more than twelve
+  styles now have a link straight to it.
 - The sliders in FontNest are drawn by the app now instead of the web view, so they match
   everything around them: a slimmer track that fills in as you drag, a round handle that grows
   slightly under the pointer, and the same colors in light and dark.
@@ -162,7 +191,8 @@ on your computer.
   it has verified the signature.
 - Apache-2.0 license.
 
-[Unreleased]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.0...v0.1.1

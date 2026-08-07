@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { onMount } from 'svelte';
+	import { quintOut } from 'svelte/easing';
+	import { slide } from 'svelte/transition';
 
 	import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
 	import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
@@ -29,11 +31,7 @@
 	import { createBrowserCatalogue } from '$lib/catalogue/browser-catalogue';
 	import { contextMenu } from '$lib/context-menu/action';
 	import { writeClipboardText } from '$lib/context-menu/clipboard';
-	import {
-		faceContextMenu,
-		familyContextMenu,
-		glyphContextMenu
-	} from '$lib/context-menu/entries';
+	import { faceContextMenu, familyContextMenu } from '$lib/context-menu/entries';
 	import {
 		familyOrigin,
 		FONT_ORIGIN_ORDER,
@@ -66,23 +64,6 @@
 	const MAX_DETAIL_FACES = 12;
 	const UPDATE_CHECK_DELAY_MS = 8_000;
 	const PREFERENCES_KEY = 'fontnest.preferences.v1';
-	const GLYPH_SAMPLE = [
-		'A',
-		'a',
-		'g',
-		'R',
-		'Q',
-		'y',
-		'ß',
-		'Æ',
-		'ø',
-		'Ж',
-		'7',
-		'&',
-		'@',
-		'½',
-		'→'
-	];
 
 	const SPACING_OPTIONS: DiscoverFilterOption[] = [
 		{ value: 'all', label: 'Any spacing' },
@@ -129,6 +110,15 @@
 		if (view !== 'library') libraryControlsElevated = false;
 	});
 
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const query = window.matchMedia('(prefers-reduced-motion: reduce)');
+		const syncPreference = () => (prefersReducedMotion = query.matches);
+		syncPreference();
+		query.addEventListener('change', syncPreference);
+		return () => query.removeEventListener('change', syncPreference);
+	});
+
 	let catalogue = $state<FontCatalogue | null>(null);
 	let catalogueMode = $state<CatalogueMode>('browser');
 	let loading = $state(true);
@@ -158,6 +148,7 @@
 	let pinnedFamilyIds = $state<string[]>([]);
 	let toast = $state<Toast | null>(null);
 	let localPreview = $state<ValidatedLocalFont | null>(null);
+	let prefersReducedMotion = $state(false);
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
 	let updateCheckTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -533,13 +524,19 @@
 		savePreferences();
 	}
 
-	function toggleSelectedFamilyPinned() {
-		const family = selectedFamily;
+	/**
+	 * Saving a family is one click from the catalogue row, so it must not move the user:
+	 * the list keeps its scroll position and the family lands in the sidebar's saved
+	 * previews. Opening the preview is a separate, deliberate action.
+	 */
+	function toggleFamilyPinned(familyId: string) {
+		const family = catalogue?.families.find((candidate) => candidate.id === familyId);
 		if (!family) return;
-		const isPinned = pinnedFamilyIds.includes(family.id);
+
+		const isPinned = pinnedFamilyIds.includes(familyId);
 		pinnedFamilyIds = isPinned
-			? pinnedFamilyIds.filter((familyId) => familyId !== family.id)
-			: [...pinnedFamilyIds, family.id];
+			? pinnedFamilyIds.filter((candidate) => candidate !== familyId)
+			: [...pinnedFamilyIds, familyId];
 		savePreferences();
 		showToast(
 			isPinned
@@ -547,6 +544,10 @@
 				: `${family.name} added to saved previews.`,
 			'success'
 		);
+	}
+
+	function toggleSelectedFamilyPinned() {
+		if (selectedFamily) toggleFamilyPinned(selectedFamily.id);
 	}
 
 	function reviewConflict(familyId: string) {
@@ -686,6 +687,30 @@
 		return specimenMode === 'names' ? family.name : previewText.trim() || family.name;
 	}
 
+	/**
+	 * The collapsed row already names origin, formats, style count, spacing, and technology,
+	 * so the open panel says only what the row cannot: how far the family's weights reach.
+	 */
+	function weightRange(family: FontFamilySummary): string | null {
+		if (!family.weights.length) return null;
+		const lowest = Math.min(...family.weights);
+		const highest = Math.max(...family.weights);
+		if (family.variable) return `Weights ${lowest}–${highest} (variable)`;
+		return lowest === highest
+			? `Weight ${weightName(lowest)} ${lowest}`
+			: `Weights ${lowest}–${highest}`;
+	}
+
+	function faceDetail(
+		family: FontFamilySummary,
+		face: FontFamilySummary['faces'][number]
+	): string {
+		const parts = [face.fileName];
+		if (family.origins.length > 1) parts.push(fontOrigin(face.origin).label);
+		if (face.variable) parts.push('Variable');
+		return parts.join(' · ');
+	}
+
 	// Local font files reach the web view only after the Rust boundary validates them.
 	// The picker returns a trusted path; validate_font_file parses every face and hands
 	// back an opaque handle plus a synthetic family, which the preview modal renders.
@@ -760,17 +785,6 @@
 			native: catalogueMode === 'native',
 			onRevealFile: () => void revealFaceFile(face.id),
 			onCopyFilePath: () => void copyFaceFilePath(face.id),
-			onCopy: copyValue
-		});
-	}
-
-	function glyphMenu(glyph: string) {
-		return glyphContextMenu({
-			codepoint: glyph.codePointAt(0) ?? 0,
-			onAppendToPreviewText: () => {
-				setPreviewText(`${previewText}${glyph}`);
-				specimenMode = 'custom';
-			},
 			onCopy: copyValue
 		});
 	}
@@ -1046,6 +1060,7 @@
 					{:else}
 						<div class="specimen-list" aria-label="Font families">
 							{#each renderedFamilies as family, index (family.id)}
+								{@const saved = pinnedFamilyIds.includes(family.id)}
 								<article
 									use:contextMenu={() => familyMenu(family)}
 									class:selected={selectedFamilyId === family.id}
@@ -1112,28 +1127,52 @@
 										</span>
 									</button>
 
+									<!-- Outside the disclosure button on purpose: saving a family and
+									     opening it are different intents, and a button inside a button
+									     is invalid markup. -->
+									<button
+										type="button"
+										class:saved
+										class="row-save"
+										aria-pressed={saved}
+										aria-label={saved
+											? `Remove ${family.name} from saved previews`
+											: `Save ${family.name} to previews`}
+										title={saved ? 'Saved to previews' : 'Save to previews'}
+										onclick={() => toggleFamilyPinned(family.id)}
+									>
+										<Icon name={saved ? 'check' : 'plus'} size={15} />
+									</button>
+
 									{#if selectedFamilyId === family.id}
 										<section
 											id={`family-details-${family.id}`}
 											class="family-details"
+											in:slide={{
+												duration: prefersReducedMotion ? 0 : 240,
+												easing: quintOut
+											}}
+											out:slide={{
+												duration: prefersReducedMotion ? 0 : 170,
+												easing: quintOut
+											}}
 										>
-											<div class="detail-heading">
-												<div>
-													<strong
-														>{family.faceCount} faces · {family.fileCount}
-														files</strong
+											<div class="detail-bar">
+												<p class="detail-facts">
+													{#if weightRange(family)}
+														<span>{weightRange(family)}</span>
+													{/if}
+													<span
+														>{family.fileCount}
+														{family.fileCount === 1
+															? 'file'
+															: 'files'}</span
 													>
-													<p>
-														{family.formats.join(' · ')} · {family.monospaced
-															? 'Monospaced'
-															: 'Proportional'} · {family.variable
-															? 'Variable'
-															: 'Static'}
-													</p>
-													<p class="detail-origin">
-														{familyOrigin(family.origins).description}
-													</p>
-												</div>
+													<span
+														>{familyOrigin(family.origins)
+															.description}</span
+													>
+												</p>
 												<div class="detail-actions">
 													{#if family.hasConflict}
 														<button
@@ -1147,20 +1186,17 @@
 													{/if}
 													<button
 														type="button"
-														class:pinned={pinnedFamilyIds.includes(
-															family.id
-														)}
 														class="detail-action"
 														onclick={() => openFamilyPreview(family.id)}
 													>
-														<Icon name="bookmark" size={15} />
-														{pinnedFamilyIds.includes(family.id)
-															? 'Open preview'
-															: 'Save & preview'}
+														Open preview
+														<Icon name="chevron" size={14} />
 													</button>
 												</div>
 											</div>
 
+											<!-- Every face draws the same string so the cuts stack and compare;
+											     setting each one in its own style name compared different words. -->
 											<ul class="face-list">
 												{#each family.faces.slice(0, MAX_DETAIL_FACES) as face (face.id)}
 													<li
@@ -1168,15 +1204,15 @@
 															faceMenu(family, face)}
 													>
 														<span class="face-meta">
-															<strong>{face.styleName}</strong>
-															<small>
-																{face.fileName}{family.origins
-																	.length > 1
-																	? ` · ${fontOrigin(face.origin).label}`
-																	: ''}{face.variable
-																	? ' · Variable'
-																	: ''}
-															</small>
+															<span class="face-name">
+																<strong>{face.styleName}</strong>
+																<span class="face-weight"
+																	>{face.weight}</span
+																>
+															</span>
+															<small title={face.fileName}
+																>{faceDetail(family, face)}</small
+															>
 														</span>
 														<span
 															class="face-specimen"
@@ -1184,29 +1220,20 @@
 																family,
 																face.weight,
 																face.style
-															)}>{face.styleName}</span
+															)}>{specimenText(family)}</span
 														>
 													</li>
 												{/each}
 											</ul>
 											{#if family.faces.length > MAX_DETAIL_FACES}
-												<p class="more-faces">
-													+{family.faces.length - MAX_DETAIL_FACES} more faces
-												</p>
-											{/if}
-
-											<div class="glyph-sample">
-												<h3>Character sample</h3>
-												<div
-													class="glyphs"
-													style={`font-family: ${safeFontStack(family.name)}`}
+												<button
+													type="button"
+													class="more-faces"
+													onclick={() => openFamilyPreview(family.id)}
 												>
-													{#each GLYPH_SAMPLE as glyph (glyph)}<span
-															use:contextMenu={() => glyphMenu(glyph)}
-															>{glyph}</span
-														>{/each}
-												</div>
-											</div>
+													Show all {family.faceCount} styles in preview
+												</button>
+											{/if}
 										</section>
 									{/if}
 								</article>
@@ -1637,6 +1664,7 @@
 	}
 
 	.specimen-entry {
+		position: relative;
 		content-visibility: auto;
 		contain-intrinsic-size: auto 230px;
 		border-bottom: 1px solid var(--color-border);
@@ -1669,7 +1697,9 @@
 		min-height: 45px;
 		align-items: center;
 		gap: clamp(10px, 1.4vw, 22px);
-		padding: 0 24px;
+		/* Right padding clears the save button, which sits over the row rather than
+		   inside the disclosure button. */
+		padding: 0 62px 0 24px;
 		overflow: hidden;
 		color: var(--color-subtle);
 		font-size: var(--text-micro);
@@ -1707,10 +1737,6 @@
 		font-weight: 650;
 	}
 
-	.detail-origin {
-		color: var(--color-subtle);
-	}
-
 	.conflict-label {
 		display: inline-flex;
 		align-items: center;
@@ -1733,6 +1759,41 @@
 
 	.selected .open-label :global(svg) {
 		transform: rotate(90deg);
+	}
+
+	/* Quiet on a list of thousands, but always present: a control that appears only on
+	   hover is unreachable by touch and easy to miss by keyboard. */
+	.row-save {
+		position: absolute;
+		top: 7px;
+		right: 18px;
+		display: inline-flex;
+		width: 31px;
+		height: 31px;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
+		color: var(--color-subtle);
+		background: transparent;
+		cursor: pointer;
+		transition:
+			color var(--motion-fast),
+			border-color var(--motion-fast),
+			background var(--motion-fast);
+	}
+
+	.row-save:hover {
+		border-color: var(--color-border);
+		color: var(--color-text);
+		background: var(--color-control);
+	}
+
+	.row-save.saved {
+		border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-border));
+		color: var(--color-text);
+		background: color-mix(in srgb, var(--color-accent) 12%, var(--color-control));
 	}
 
 	.specimen-canvas {
@@ -1765,6 +1826,13 @@
 
 	@media (prefers-reduced-motion: reduce) {
 		.specimen-canvas > small {
+			transition: none;
+		}
+
+		.specimen-entry,
+		.row-save,
+		.detail-action,
+		.more-faces {
 			transition: none;
 		}
 	}
@@ -1843,21 +1911,30 @@
 		background: color-mix(in srgb, var(--color-panel) 62%, transparent);
 	}
 
-	.detail-heading {
+	/* The collapsed row already carries origin, format, style count, spacing, and
+	   technology, so this bar only adds what it cannot fit. */
+	.detail-bar {
 		display: flex;
-		align-items: flex-start;
+		align-items: center;
 		justify-content: space-between;
 		gap: var(--space-xl);
 	}
 
-	.detail-heading strong {
-		font-size: var(--text-label);
-	}
-
-	.detail-heading p {
-		margin: 4px 0 0;
+	.detail-facts {
+		display: flex;
+		min-width: 0;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 4px 10px;
+		margin: 0;
 		color: var(--color-muted);
 		font-size: var(--text-micro);
+	}
+
+	.detail-facts span + span::before {
+		margin-right: 10px;
+		color: var(--color-subtle);
+		content: '·';
 	}
 
 	.detail-actions {
@@ -1899,18 +1976,9 @@
 		background: color-mix(in srgb, var(--color-warning) 10%, transparent);
 	}
 
-	.detail-action.pinned {
-		border-color: color-mix(in srgb, var(--color-accent) 58%, var(--color-border));
-		background: color-mix(in srgb, var(--color-accent) 8%, var(--color-control));
-	}
-
-	.detail-action.pinned :global(svg) {
-		fill: currentColor;
-	}
-
 	.face-list {
 		display: grid;
-		margin: 14px 0 0;
+		margin: 12px 0 0;
 		padding: 0;
 		list-style: none;
 		border-top: 1px solid var(--color-border);
@@ -1918,11 +1986,11 @@
 
 	.face-list li {
 		display: grid;
-		min-height: 56px;
-		grid-template-columns: minmax(130px, 220px) minmax(0, 1fr);
+		min-height: 44px;
+		grid-template-columns: minmax(126px, 180px) minmax(0, 1fr);
 		align-items: center;
 		gap: 20px;
-		padding: 10px 0;
+		padding: 7px 0;
 		overflow: hidden;
 		border-bottom: 1px solid var(--color-border);
 	}
@@ -1930,12 +1998,28 @@
 	.face-meta {
 		display: grid;
 		min-width: 0;
-		gap: 2px;
+		gap: 1px;
 	}
 
-	.face-meta strong {
+	.face-name {
+		display: flex;
+		align-items: baseline;
+		gap: 7px;
+	}
+
+	.face-name strong {
+		overflow: hidden;
 		font-size: var(--text-body-sm);
 		font-weight: 650;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.face-weight {
+		flex: none;
+		color: var(--color-muted);
+		font-size: var(--text-micro);
+		font-variant-numeric: tabular-nums;
 	}
 
 	.face-meta small {
@@ -1946,43 +2030,32 @@
 		white-space: nowrap;
 	}
 
+	/* Smaller than the row specimen above it: this column is a waterfall for comparing
+	   cuts, not a second headline. */
 	.face-specimen {
-		font-size: clamp(24px, 3.6vw, 42px);
-		line-height: 1.2;
+		overflow: hidden;
+		font-size: clamp(20px, 2.4vw, 32px);
+		line-height: 1.25;
 		letter-spacing: -0.02em;
 		white-space: nowrap;
 	}
 
 	.more-faces {
 		margin: 12px 0 0;
-		color: var(--color-subtle);
+		padding: 0;
+		border: 0;
+		color: var(--color-muted);
+		background: transparent;
 		font-size: var(--text-micro);
-	}
-
-	.glyph-sample {
-		margin-top: 20px;
-	}
-
-	.glyph-sample h3 {
-		margin: 0 0 10px;
-		font-size: var(--text-label);
 		font-weight: 650;
+		text-decoration: underline;
+		text-underline-offset: 3px;
+		cursor: pointer;
+		transition: color var(--motion-fast);
 	}
 
-	.glyphs {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
-		border-top: 1px solid var(--color-border);
-		border-left: 1px solid var(--color-border);
-	}
-
-	.glyphs span {
-		display: grid;
-		aspect-ratio: 1;
-		place-items: center;
-		border-right: 1px solid var(--color-border);
-		border-bottom: 1px solid var(--color-border);
-		font-size: var(--text-title);
+	.more-faces:hover {
+		color: var(--color-text);
 	}
 
 	/* Empty / error states */
@@ -2209,7 +2282,15 @@
 			padding-inline: 16px;
 		}
 
-		.detail-heading {
+		.family-line {
+			padding-right: 54px;
+		}
+
+		.row-save {
+			right: 12px;
+		}
+
+		.detail-bar {
 			align-items: stretch;
 			flex-direction: column;
 			gap: var(--space-md);
@@ -2217,7 +2298,7 @@
 
 		.face-list li {
 			grid-template-columns: 1fr;
-			gap: 6px;
+			gap: 4px;
 		}
 
 		.toast {

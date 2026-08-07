@@ -32,6 +32,31 @@
 		{ value: 'full', label: 'Full' }
 	] as const;
 
+	const STANDARD_WEIGHTS = [100, 200, 300, 400, 500, 600, 700, 800, 900];
+
+	// Friendly names for the variation axes a type tester exposes. Registered axes read in
+	// plain language; anything custom falls back to its raw four-letter tag.
+	const AXIS_LABELS: Record<string, string> = {
+		wght: 'Weight',
+		wdth: 'Width',
+		opsz: 'Optical size',
+		slnt: 'Slant',
+		ital: 'Italic',
+		GRAD: 'Grade'
+	};
+
+	function axisLabel(tag: string): string {
+		return AXIS_LABELS[tag] ?? tag.toUpperCase();
+	}
+
+	function axisStep(axis: { minimum: number; maximum: number }): number {
+		return axis.maximum - axis.minimum > 20 ? 1 : 0.1;
+	}
+
+	function clamp(value: number, min: number, max: number): number {
+		return Math.min(max, Math.max(min, value));
+	}
+
 	type Alignment = 'left' | 'center';
 	type LetterCase = 'as-typed' | 'upper' | 'lower';
 	type GlyphViewMode = 'fill' | 'outline' | 'points';
@@ -57,10 +82,13 @@
 	import { contextMenu } from '$lib/context-menu/action';
 	import { familyOrigin, fontOrigin, isSystemOnly } from '$lib/fonts/font-origin';
 	import { faceContextMenu, glyphContextMenu } from '$lib/context-menu/entries';
+	import { activateLocalFontPreview } from '$lib/fonts/local-fonts';
 	import {
 		exportFontFaceParserJson,
+		fontFaceFilePath,
 		inspectFontFace,
-		inspectFontGlyphOutline
+		inspectFontGlyphOutline,
+		validateFontFile
 	} from '$lib/tauri/commands';
 
 	import Icon from './Icon.svelte';
@@ -127,7 +155,22 @@
 
 	let specimenEl = $state<HTMLElement>();
 	let sentinelEl = $state<HTMLElement>();
+	let stylesSectionEl = $state<HTMLElement>();
+	let glyphsSectionEl = $state<HTMLElement>();
 	let stuck = $state(false);
+	// Which section sits under the sticky bar, so its controls point at what you're reading.
+	let inStyles = $state(false);
+	let inGlyphs = $state(false);
+	let activeSection = $derived(inStyles ? 'styles' : inGlyphs ? 'glyphs' : 'hero');
+	// Size of the character grid, driven by the sticky bar while the glyphs are on screen.
+	let glyphSize = $state(28);
+	// Non-wght variation axes the user has nudged away from their default, keyed by tag.
+	let axisOverrides = $state<Record<string, number>>({});
+	// Windows exposes an installed variable font to the web view as its named instances only,
+	// so font-variation-settings snaps to the nearest cut instead of interpolating. Loading the
+	// actual file under a synthetic family name gives the web view the real variable resource,
+	// so weight and every other axis move continuously. Null until that face is loaded.
+	let variableRenderFamily = $state<string | null>(null);
 
 	function safeFontStack(name: string): string {
 		return `"${name.replace(/["\\;\n\r]/g, '')}", system-ui, sans-serif`;
@@ -156,6 +199,38 @@
 	);
 	let nameWeight = $derived(nearestWeight(availableWeights, 600));
 	let glyphWeight = $derived(glyphWeightOverride ?? previewWeight);
+	// A family is variable per the catalogue, but the live axis range only arrives with the
+	// face inspection, so the weight slider and stepped rows wait for it rather than guess.
+	let variationAxes = $derived(
+		(faceInspection?.variationAxes ?? []).filter((axis) => !axis.hidden)
+	);
+	let wghtAxis = $derived(variationAxes.find((axis) => axis.tag === 'wght') ?? null);
+	let otherAxes = $derived(variationAxes.filter((axis) => axis.tag !== 'wght'));
+	let variableWeightActive = $derived(Boolean(family?.variable) && wghtAxis !== null);
+	// Specimens render with the loaded variable file when it is ready, otherwise the installed
+	// family name (which is all a static font needs anyway).
+	let renderFamily = $derived(variableRenderFamily ?? family?.name ?? '');
+	let heroWeight = $derived(
+		wghtAxis
+			? Math.round(clamp(previewWeight, wghtAxis.minimum, wghtAxis.maximum))
+			: previewWeight
+	);
+	// One row per standard weight name inside the axis range, plus the exact endpoints, so a
+	// variable file reads like a family of cuts instead of a single mystery row.
+	let variableWeightRows = $derived.by(() => {
+		if (!wghtAxis) return [] as { weight: number; isDefault: boolean }[];
+		const { minimum, maximum } = wghtAxis;
+		const defaultWeight = Math.round(wghtAxis.default);
+		const candidates = [
+			Math.round(minimum),
+			...STANDARD_WEIGHTS.filter((weight) => weight >= minimum && weight <= maximum),
+			Math.round(maximum)
+		];
+		return candidates
+			.filter((weight, index) => candidates.indexOf(weight) === index)
+			.sort((a, b) => a - b)
+			.map((weight) => ({ weight, isDefault: weight === defaultWeight }));
+	});
 	let selectedFace = $derived.by(() => {
 		if (!family) return null;
 		return (
@@ -178,7 +253,7 @@
 			value:
 				axis.tag === 'wght'
 					? Math.min(axis.maximum, Math.max(axis.minimum, glyphWeight))
-					: axis.default
+					: (axisOverrides[axis.tag] ?? axis.default)
 		}));
 	});
 	let displayText = $derived(previewText.trim() || family?.name || 'Type to preview');
@@ -230,9 +305,32 @@
 		};
 	});
 
+	// Builds a font-variation-settings value: wght from the tester, every other axis from the
+	// user's override or its default. Empty for a static face so callers can skip the property.
+	function variationSettings(weight: number): string {
+		const parts: string[] = [];
+		if (wghtAxis) {
+			parts.push(`"wght" ${Math.round(clamp(weight, wghtAxis.minimum, wghtAxis.maximum))}`);
+		}
+		for (const axis of otherAxes) {
+			parts.push(`"${axis.tag}" ${axisOverrides[axis.tag] ?? axis.default}`);
+		}
+		return parts.join(', ');
+	}
+
+	let heroVariationSettings = $derived(variationSettings(heroWeight));
+	// The character preview follows the same weight, so it interpolates with the tester too.
+	let glyphVariationCss = $derived(
+		variableWeightActive ? `font-variation-settings: ${variationSettings(glyphWeight)}; ` : ''
+	);
+
 	let heroStyle = $derived(
 		family
-			? `font-family: ${safeFontStack(family.name)}; font-size: clamp(40px, ${previewSize}px, ${previewSize}px); font-weight: ${previewWeight}; text-align: ${alignment}; text-transform: ${caseTransform};`
+			? `font-family: ${safeFontStack(renderFamily)}; font-size: clamp(40px, ${previewSize}px, ${previewSize}px); font-weight: ${heroWeight}; ${
+					heroVariationSettings
+						? `font-variation-settings: ${heroVariationSettings}; `
+						: ''
+				}text-align: ${alignment}; text-transform: ${caseTransform};`
 			: ''
 	);
 
@@ -242,6 +340,55 @@
 			style === 'italic' ? 'italic' : 'normal'
 		}; font-size: ${stylesSize}px; text-align: ${alignment}; text-transform: ${caseTransform};`;
 	}
+
+	// A stepped weight row draws the variable face at one wght value while carrying whatever
+	// the other axes are set to, so the range compares as a stack of real cuts.
+	function faceVariationStyle(weight: number): string {
+		if (!family) return '';
+		const settings = variationSettings(weight);
+		return `font-family: ${safeFontStack(renderFamily)}; font-weight: ${weight}; font-style: ${
+			selectedFace?.style === 'italic' ? 'italic' : 'normal'
+		}; ${settings ? `font-variation-settings: ${settings}; ` : ''}font-size: ${stylesSize}px; text-align: ${alignment}; text-transform: ${caseTransform};`;
+	}
+
+	function setAxisValue(tag: string, value: number) {
+		axisOverrides = { ...axisOverrides, [tag]: value };
+	}
+
+	function resetAxes() {
+		axisOverrides = {};
+		if (wghtAxis) onPreviewWeight(Math.round(wghtAxis.default));
+	}
+
+	// Load a variable family's real file into the web view so its axes interpolate instead of
+	// snapping to the named instances Windows exposes. Static families and the browser build
+	// keep the installed family name and skip the round trip. Selecting a face runs this once;
+	// dragging the weight does not, since the selected face does not change.
+	$effect(() => {
+		const face = selectedFace;
+		const isVariable = Boolean(family?.variable);
+		variableRenderFamily = null;
+		if (!isVariable || !face) return;
+		if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
+
+		let cancelled = false;
+		void (async () => {
+			try {
+				const path = await fontFaceFilePath(face.id);
+				const validated = await validateFontFile(path);
+				await activateLocalFontPreview(validated);
+				if (!cancelled) variableRenderFamily = validated.previewFamily;
+			} catch {
+				// Fall back to the installed family name: the specimen still renders, it just
+				// snaps to the nearest named instance rather than interpolating.
+				if (!cancelled) variableRenderFamily = null;
+			}
+		})();
+
+		return () => {
+			cancelled = true;
+		};
+	});
 
 	// Mirror the shared preview text into the editable specimen, but never while
 	// it holds the caret — writing back mid-edit would jump the cursor.
@@ -263,6 +410,7 @@
 		parserExport = null;
 		parserError = '';
 		parserCopyLabel = 'Copy JSON';
+		axisOverrides = {};
 		if (!faceId) return;
 		if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
 			inspectionError = 'Metric data is available in the desktop app.';
@@ -368,6 +516,37 @@
 			{ threshold: 0 }
 		);
 		observer.observe(sentinel);
+		return () => observer.disconnect();
+	});
+
+	// Retarget the sticky bar to whatever sits under it. The band starts just below the bar
+	// and covers the upper viewport, so the styles list claims the controls only while it is
+	// the thing being read, then hands them back to the hero tester above or the glyphs below.
+	$effect(() => {
+		const section = stylesSectionEl;
+		if (!section || typeof IntersectionObserver === 'undefined') return;
+		const observer = new IntersectionObserver(
+			([entry]) => {
+				inStyles = entry.isIntersecting;
+			},
+			{ rootMargin: '-96px 0px -55% 0px', threshold: 0 }
+		);
+		observer.observe(section);
+		return () => observer.disconnect();
+	});
+
+	// The characters section claims the bar the same way, so Size resizes the glyph grid while
+	// it is on screen. Styles wins when both overlap the band, since it sits higher up.
+	$effect(() => {
+		const section = glyphsSectionEl;
+		if (!section || typeof IntersectionObserver === 'undefined') return;
+		const observer = new IntersectionObserver(
+			([entry]) => {
+				inGlyphs = entry.isIntersecting;
+			},
+			{ rootMargin: '-96px 0px -55% 0px', threshold: 0 }
+		);
+		observer.observe(section);
 		return () => observer.disconnect();
 	});
 
@@ -608,34 +787,115 @@
 			<span bind:this={sentinelEl} class="scroll-sentinel" aria-hidden="true"></span>
 
 			<div class:stuck class="tester-controls">
-				<div class="weight-scroller" role="group" aria-label="Preview weight">
-					{#each availableWeights as weight (weight)}
-						<button
-							type="button"
-							class:active={previewWeight === weight}
-							aria-pressed={previewWeight === weight}
-							onclick={() => onPreviewWeight(weight)}
-						>
-							{weightName(weight)}
-							<small>{weight}</small>
-						</button>
-					{/each}
+				<div class="control-lead">
+					{#if activeSection === 'styles'}
+						<span class="context-label">
+							<strong>Styles</strong>
+							<small>
+								{#if variableWeightActive}
+									{variableWeightRows.length} weights
+								{:else}
+									{family.faceCount} {family.faceCount === 1 ? 'style' : 'styles'}
+								{/if}
+							</small>
+						</span>
+					{:else if variableWeightActive && wghtAxis}
+						<label class="size-control weight-slider">
+							<span class="control-label">Weight</span>
+							<input
+								type="range"
+								min={wghtAxis.minimum}
+								max={wghtAxis.maximum}
+								step="1"
+								value={heroWeight}
+								aria-label="Preview weight"
+								aria-valuetext={`${weightName(heroWeight)} ${heroWeight}`}
+								oninput={(event) =>
+									onPreviewWeight(Number(event.currentTarget.value))}
+							/>
+							<output>{heroWeight}</output>
+						</label>
+					{:else}
+						<div class="weight-scroller" role="group" aria-label="Preview weight">
+							{#each availableWeights as weight (weight)}
+								<button
+									type="button"
+									class:active={previewWeight === weight}
+									aria-pressed={previewWeight === weight}
+									onclick={() => onPreviewWeight(weight)}
+								>
+									{weightName(weight)}
+									<small>{weight}</small>
+								</button>
+							{/each}
+						</div>
+					{/if}
 				</div>
 
 				<div class="control-cluster">
-					<label class="size-control">
-						<span class="control-label">Size</span>
-						<input
-							type="range"
-							min="16"
-							max="200"
-							step="1"
-							value={previewSize}
-							aria-label="Preview size in pixels"
-							oninput={(event) => onPreviewSize(Number(event.currentTarget.value))}
-						/>
-						<output>{previewSize}px</output>
-					</label>
+					{#if activeSection === 'glyphs'}
+						<div
+							class="segmented glyph-scope-bar"
+							role="group"
+							aria-label="Character set size"
+						>
+							{#each GLYPH_SET_SCOPES as scope (scope.value)}
+								<button
+									type="button"
+									class:active={glyphSetScope === scope.value}
+									aria-pressed={glyphSetScope === scope.value}
+									onclick={() => (glyphSetScope = scope.value)}
+								>
+									{scope.label}
+								</button>
+							{/each}
+						</div>
+					{/if}
+					{#if activeSection === 'styles'}
+						<label class="size-control">
+							<span class="control-label">Row size</span>
+							<input
+								type="range"
+								min="20"
+								max="96"
+								step="1"
+								value={stylesSize}
+								aria-label="Style row size in pixels"
+								oninput={(event) =>
+									(stylesSize = Number(event.currentTarget.value))}
+							/>
+							<output>{stylesSize}px</output>
+						</label>
+					{:else if activeSection === 'glyphs'}
+						<label class="size-control">
+							<span class="control-label">Glyph size</span>
+							<input
+								type="range"
+								min="16"
+								max="64"
+								step="1"
+								value={glyphSize}
+								aria-label="Character grid size in pixels"
+								oninput={(event) => (glyphSize = Number(event.currentTarget.value))}
+							/>
+							<output>{glyphSize}px</output>
+						</label>
+					{:else}
+						<label class="size-control">
+							<span class="control-label">Size</span>
+							<input
+								type="range"
+								min="16"
+								max="200"
+								step="1"
+								value={previewSize}
+								aria-label="Preview size in pixels"
+								oninput={(event) =>
+									onPreviewSize(Number(event.currentTarget.value))}
+							/>
+							<output>{previewSize}px</output>
+						</label>
+					{/if}
 
 					<div class="segmented" role="group" aria-label="Text alignment">
 						<button
@@ -718,52 +978,132 @@
 				</button>
 			</div>
 
-			<section class="styles-section" aria-labelledby="styles-title">
+			{#if variableWeightActive && otherAxes.length}
+				<section class="axes-section" aria-labelledby="axes-title">
+					<div class="axes-head">
+						<h2 id="axes-title">
+							Variable axes <span class="count">{variationAxes.length}</span>
+						</h2>
+						<button type="button" class="axes-reset" onclick={resetAxes}>
+							Reset to default
+						</button>
+					</div>
+					<div class="axes-grid">
+						{#each variationAxes as axis (axis.tag)}
+							{@const axisValue =
+								axis.tag === 'wght'
+									? heroWeight
+									: (axisOverrides[axis.tag] ?? axis.default)}
+							<label class="axis-field">
+								<span class="axis-name">
+									<span class="axis-title">
+										<strong>{axisLabel(axis.tag)}</strong>
+										<code>{axis.tag}</code>
+									</span>
+									<output>{formatAxisValue(axisValue)}</output>
+								</span>
+								<input
+									type="range"
+									min={axis.minimum}
+									max={axis.maximum}
+									step={axisStep(axis)}
+									value={axisValue}
+									aria-label={`${axisLabel(axis.tag)} axis`}
+									oninput={(event) =>
+										axis.tag === 'wght'
+											? onPreviewWeight(Number(event.currentTarget.value))
+											: setAxisValue(
+													axis.tag,
+													Number(event.currentTarget.value)
+												)}
+								/>
+								<span class="axis-scale">
+									<span>{formatAxisValue(axis.minimum)}</span>
+									<span>{formatAxisValue(axis.maximum)}</span>
+								</span>
+							</label>
+						{/each}
+					</div>
+				</section>
+			{/if}
+
+			<section
+				bind:this={stylesSectionEl}
+				class="styles-section"
+				aria-labelledby="styles-title"
+			>
 				<div class="section-head">
-					<h2 id="styles-title">
-						Styles <span class="count">{family.faceCount}</span>
-					</h2>
-					<label class="size-control compact">
-						<span class="control-label">Row size</span>
-						<input
-							type="range"
-							min="20"
-							max="96"
-							step="1"
-							value={stylesSize}
-							aria-label="Style row size in pixels"
-							oninput={(event) => (stylesSize = Number(event.currentTarget.value))}
-						/>
-						<output>{stylesSize}px</output>
-					</label>
+					<div class="section-title">
+						<h2 id="styles-title">
+							Styles <span class="count"
+								>{variableWeightActive
+									? variableWeightRows.length
+									: family.faceCount}</span
+							>
+						</h2>
+						{#if variableWeightActive && wghtAxis}
+							<p class="section-caption">
+								One file, sampled across the weight axis {formatAxisValue(
+									wghtAxis.minimum
+								)}–{formatAxisValue(wghtAxis.maximum)}. Set the tester with Weight
+								up top.
+							</p>
+						{/if}
+					</div>
 				</div>
 
 				<ul class="style-list">
-					{#each family.faces as face, index (face.id)}
-						<li
-							use:contextMenu={() => faceMenu(face)}
-							class="style-row"
-							style={`--row-index: ${index};`}
-						>
-							<div class="style-meta">
-								<strong>{face.styleName || weightName(face.weight)}</strong>
-								<span class="style-tags">
-									<span>{face.weight}</span>
-									{#if face.style === 'italic'}<span class="tag-italic"
-											>Italic</span
-										>{/if}
-									<span class="tag-format">{face.format}</span>
-								</span>
-							</div>
-							<p class="style-specimen" style={faceStyle(face.weight, face.style)}>
-								{displayText}
-							</p>
-						</li>
-					{/each}
+					{#if variableWeightActive}
+						{#each variableWeightRows as row, index (row.weight)}
+							<li class="style-row" style={`--row-index: ${index};`}>
+								<div class="style-meta">
+									<strong>{weightName(row.weight)}</strong>
+									<span class="style-tags">
+										<span>{row.weight}</span>
+										{#if row.isDefault}<span class="tag-default">Default</span
+											>{/if}
+										<span class="tag-format">Variable</span>
+									</span>
+								</div>
+								<p class="style-specimen" style={faceVariationStyle(row.weight)}>
+									{displayText}
+								</p>
+							</li>
+						{/each}
+					{:else}
+						{#each family.faces as face, index (face.id)}
+							<li
+								use:contextMenu={() => faceMenu(face)}
+								class="style-row"
+								style={`--row-index: ${index};`}
+							>
+								<div class="style-meta">
+									<strong>{face.styleName || weightName(face.weight)}</strong>
+									<span class="style-tags">
+										<span>{face.weight}</span>
+										{#if face.style === 'italic'}<span class="tag-italic"
+												>Italic</span
+											>{/if}
+										<span class="tag-format">{face.format}</span>
+									</span>
+								</div>
+								<p
+									class="style-specimen"
+									style={faceStyle(face.weight, face.style)}
+								>
+									{displayText}
+								</p>
+							</li>
+						{/each}
+					{/if}
 				</ul>
 			</section>
 
-			<section class="glyphs-section" aria-labelledby="glyphs-title">
+			<section
+				bind:this={glyphsSectionEl}
+				class="glyphs-section"
+				aria-labelledby="glyphs-title"
+			>
 				<div class="section-head">
 					<h2 id="glyphs-title">
 						Characters
@@ -838,7 +1178,7 @@
 				</div>
 
 				<div class="glyph-layout">
-					<div class="glyph-catalogue">
+					<div class="glyph-catalogue" style={`--glyph-size: ${glyphSize}px;`}>
 						{#if inspectionLoading}
 							<div class="glyph-coverage-loading" aria-live="polite">
 								<span></span><span></span><span></span>
@@ -886,7 +1226,7 @@
 											>
 												<div
 													class="glyphs"
-													style={`font-family: ${safeFontStack(family.name)}; font-weight: ${glyphWeight}; font-style: ${selectedFace?.style ?? 'normal'};`}
+													style={`font-family: ${safeFontStack(renderFamily)}; font-weight: ${glyphWeight}; ${glyphVariationCss}font-style: ${selectedFace?.style ?? 'normal'};`}
 												>
 													{#each group.codepoints.slice(0, limit) as codepoint (codepoint)}
 														{@const glyph =
@@ -1034,7 +1374,7 @@
 												x={metricChart.width / 2}
 												y={metricChart.y(0)}
 												text-anchor="middle"
-												style={`font-family: ${safeFontStack(family.name)}; font-weight: ${glyphWeight}; font-style: ${selectedFace?.style ?? 'normal'}; font-size: ${metricChart.fontSize}px;`}
+												style={`font-family: ${safeFontStack(renderFamily)}; font-weight: ${glyphWeight}; ${glyphVariationCss}font-style: ${selectedFace?.style ?? 'normal'}; font-size: ${metricChart.fontSize}px;`}
 											>
 												{selectedGlyph}
 											</text>
@@ -1114,7 +1454,7 @@
 							{:else}
 								<div
 									class="glyph-big"
-									style={`font-family: ${safeFontStack(family.name)}; font-weight: ${glyphWeight}; font-style: ${selectedFace?.style ?? 'normal'};`}
+									style={`font-family: ${safeFontStack(renderFamily)}; font-weight: ${glyphWeight}; ${glyphVariationCss}font-style: ${selectedFace?.style ?? 'normal'};`}
 								>
 									{selectedGlyph}
 									{#if inspectionLoading}
@@ -1850,8 +2190,160 @@
 		font-weight: 450;
 	}
 
-	.size-control.compact input[type='range'] {
-		width: 96px;
+	/* Contextual bar: the left slot swaps between weight tabs, a variable weight slider,
+	   and a plain section label depending on what sits under the bar. */
+	.control-lead {
+		display: flex;
+		min-width: 0;
+		flex: 1 1 auto;
+		align-items: center;
+		gap: var(--space-sm);
+	}
+
+	.weight-slider input[type='range'] {
+		width: clamp(120px, 22vw, 240px);
+	}
+
+	.context-label {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 8px;
+	}
+
+	.context-label strong {
+		font-size: var(--text-label);
+		font-weight: 650;
+	}
+
+	.context-label small {
+		color: var(--color-subtle);
+		font-size: var(--text-micro);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.section-title {
+		display: grid;
+		min-width: 0;
+		gap: 3px;
+	}
+
+	.section-caption {
+		margin: 0;
+		max-width: 62ch;
+		color: var(--color-subtle);
+		font-size: var(--text-micro);
+	}
+
+	/* Variable axes tester */
+	.axes-section {
+		padding-top: 28px;
+		border-top: 1px solid var(--color-border);
+		margin-top: 8px;
+	}
+
+	.axes-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-lg);
+		margin-bottom: 16px;
+	}
+
+	.axes-head h2 {
+		display: flex;
+		align-items: baseline;
+		gap: 10px;
+		margin: 0;
+		font-size: var(--text-heading-sm);
+		font-weight: 650;
+		letter-spacing: -0.015em;
+	}
+
+	.axes-head .count {
+		color: var(--color-subtle);
+		font-size: var(--text-body-sm);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.axes-reset {
+		height: 32px;
+		flex: none;
+		padding: 0 12px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		color: var(--color-text);
+		background: var(--color-control);
+		font-size: var(--text-label);
+		font-weight: 650;
+		cursor: pointer;
+		transition: background var(--motion-fast);
+	}
+
+	.axes-reset:hover {
+		background: var(--color-selected);
+	}
+
+	.axes-reset:focus-visible {
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
+	}
+
+	.axes-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
+		gap: 14px 24px;
+	}
+
+	.axis-field {
+		display: grid;
+		gap: 10px;
+		padding: 13px 15px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-panel);
+	}
+
+	.axis-name {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 10px;
+	}
+
+	.axis-title {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 7px;
+	}
+
+	.axis-title strong {
+		font-size: var(--text-label);
+		font-weight: 650;
+	}
+
+	.axis-title code {
+		color: var(--color-subtle);
+		font-family: ui-monospace, 'Cascadia Code', monospace;
+		font-size: var(--text-micro);
+	}
+
+	.axis-name output {
+		color: var(--color-text);
+		font-size: var(--text-label);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.axis-field input[type='range'] {
+		width: 100%;
+		accent-color: var(--color-accent);
+	}
+
+	.axis-scale {
+		display: flex;
+		justify-content: space-between;
+		color: var(--color-subtle);
+		font-size: var(--text-micro);
+		font-variant-numeric: tabular-nums;
 	}
 
 	/* Styles list */
@@ -1899,6 +2391,13 @@
 		padding: 1px 7px;
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-shell);
+	}
+
+	.tag-default {
+		padding: 1px 7px;
+		border: 1px solid color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+		border-radius: var(--radius-shell);
+		color: var(--color-text);
 	}
 
 	.style-specimen {
@@ -2014,7 +2513,7 @@
 
 	.glyphs {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(54px, 1fr));
+		grid-template-columns: repeat(auto-fill, minmax(calc(var(--glyph-size, 28px) * 1.92), 1fr));
 		border-top: 1px solid var(--color-border);
 		border-left: 1px solid var(--color-border);
 	}
@@ -2028,7 +2527,7 @@
 		border: 0;
 		border-right: 1px solid var(--color-border);
 		border-bottom: 1px solid var(--color-border);
-		font-size: clamp(20px, 2.4vw, 28px);
+		font-size: var(--glyph-size, 28px);
 		font-family: inherit;
 		color: var(--color-text);
 		background: transparent;
