@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -7,6 +8,7 @@ type TauriConfig = {
 		windows?: Array<{
 			label?: string;
 			dragDropEnabled?: boolean;
+			minWidth?: number;
 		}>;
 	};
 	bundle?: {
@@ -46,4 +48,31 @@ describe('Tauri window configuration', () => {
 		]);
 		expect(updater?.windows?.installMode).toBe('passive');
 	});
+
+	// A compact breakpoint the window can never reach is dead CSS that nobody can
+	// review. Keep the floor at or below the narrowest one we author.
+	it('lets the window shrink to the narrowest authored breakpoint', () => {
+		const configPath = new URL('../../src-tauri/tauri.conf.json', import.meta.url);
+		const config = JSON.parse(readFileSync(configPath, 'utf8')) as TauriConfig;
+		const mainWindow = config.app?.windows?.find((window) => window.label === 'main');
+		const narrowest = Math.min(...collectMaxWidthBreakpoints());
+
+		expect(Number.isFinite(narrowest)).toBe(true);
+		expect(mainWindow?.minWidth).toBeLessThanOrEqual(narrowest);
+	});
 });
+
+function collectMaxWidthBreakpoints(): number[] {
+	const root = fileURLToPath(new URL('..', import.meta.url));
+	const breakpoints: number[] = [];
+
+	for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+		if (!entry.isFile() || !entry.name.endsWith('.svelte')) continue;
+		const source = readFileSync(`${entry.parentPath}/${entry.name}`, 'utf8');
+		for (const match of source.matchAll(/@media[^{]*\(\s*max-width:\s*(\d+)px/g)) {
+			breakpoints.push(Number(match[1]));
+		}
+	}
+
+	return breakpoints;
+}

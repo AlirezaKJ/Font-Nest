@@ -82,7 +82,7 @@
 	import { contextMenu } from '$lib/context-menu/action';
 	import { familyOrigin, fontOrigin, isSystemOnly } from '$lib/fonts/font-origin';
 	import { faceContextMenu, glyphContextMenu } from '$lib/context-menu/entries';
-	import { activateLocalFontPreview } from '$lib/fonts/local-fonts';
+	import { activateLocalFontPreview, releaseLocalFontPreview } from '$lib/fonts/local-fonts';
 	import {
 		exportFontFaceParserJson,
 		fontFaceFilePath,
@@ -326,7 +326,7 @@
 
 	let heroStyle = $derived(
 		family
-			? `font-family: ${safeFontStack(renderFamily)}; font-size: clamp(40px, ${previewSize}px, ${previewSize}px); font-weight: ${heroWeight}; ${
+			? `font-family: ${safeFontStack(renderFamily)}; font-size: ${previewSize}px; font-weight: ${heroWeight}; ${
 					heroVariationSettings
 						? `font-variation-settings: ${heroVariationSettings}; `
 						: ''
@@ -372,12 +372,21 @@
 		if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
 
 		let cancelled = false;
+		let heldFamily: string | null = null;
 		void (async () => {
 			try {
 				const path = await fontFaceFilePath(face.id);
 				const validated = await validateFontFile(path);
 				await activateLocalFontPreview(validated);
-				if (!cancelled) variableRenderFamily = validated.previewFamily;
+				heldFamily = validated.previewFamily;
+				// The face may have changed while the bytes loaded. Hand the hold straight
+				// back rather than leaving it registered for the rest of the session.
+				if (cancelled) {
+					releaseLocalFontPreview(heldFamily);
+					heldFamily = null;
+					return;
+				}
+				variableRenderFamily = validated.previewFamily;
 			} catch {
 				// Fall back to the installed family name: the specimen still renders, it just
 				// snaps to the nearest named instance rather than interpolating.
@@ -387,6 +396,8 @@
 
 		return () => {
 			cancelled = true;
+			releaseLocalFontPreview(heldFamily);
+			heldFamily = null;
 		};
 	});
 

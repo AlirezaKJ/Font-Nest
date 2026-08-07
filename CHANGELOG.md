@@ -10,7 +10,22 @@ a bundled copy when you are offline.
 
 ## [Unreleased]
 
-## [0.1.4] - 2026-08-07
+### Fixed
+
+- The preview size slider now goes all the way down. Anything you set below 40px used to draw at
+  40px anyway, so the readout said one thing and the specimen showed another.
+
+### Changed
+
+- The window shrinks a lot further now (down to 520px wide), so you can snap FontNest to a third
+  of the screen or park it beside your design tool. The compact layouts were already written, the
+  window just refused to get small enough to reach them.
+- The sidebar stays a sidebar at every window size. It narrows to an icon rail when there is not
+  much room instead of folding into a strip along the top, so the navigation is where you left it
+  no matter how you resize.
+- Typing in a specimen no longer writes your settings to disk on every keystroke, and previewing
+  one font after another no longer keeps every font you looked at loaded for the rest of the
+  session.
 
 ### Added
 

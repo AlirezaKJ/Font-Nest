@@ -49,6 +49,23 @@
 		onCopy: (label: string, value: string) => void;
 	} = $props();
 
+	// Below the shell's breakpoint the sidebar is always the icon rail: an expanded 208px
+	// column would leave nothing for the catalogue. Tracking it here rather than in CSS
+	// alone keeps the tooltips, which carry each button's accessible name once its label
+	// is hidden.
+	const RAIL_QUERY = '(max-width: 819px)';
+	let narrow = $state(false);
+
+	$effect(() => {
+		const query = window.matchMedia(RAIL_QUERY);
+		narrow = query.matches;
+		const handleChange = (event: MediaQueryListEvent) => (narrow = event.matches);
+		query.addEventListener('change', handleChange);
+		return () => query.removeEventListener('change', handleChange);
+	});
+
+	let rail = $derived(collapsed || narrow);
+
 	function savedPreviewMenu(family: PinnedFamily) {
 		return savedPreviewContextMenu({
 			familyName: family.name,
@@ -299,7 +316,8 @@
 </script>
 
 <aside
-	class:collapsed
+	class:collapsed={rail}
+	class:narrow
 	class="app-navigation"
 	aria-label="Application navigation"
 	onpointerleave={() => (hoveredKey = null)}
@@ -312,7 +330,7 @@
 				type="button"
 				class:active={view === 'library'}
 				aria-current={view === 'library' ? 'page' : undefined}
-				title={collapsed ? 'Library' : undefined}
+				title={rail ? 'Library' : undefined}
 				onpointerenter={() => (hoveredKey = 'nav:library')}
 				onfocus={() => (focusedKey = 'nav:library')}
 				onblur={() => (focusedKey = null)}
@@ -327,7 +345,7 @@
 				type="button"
 				class:active={view === 'discover'}
 				aria-current={view === 'discover' ? 'page' : undefined}
-				title={collapsed ? 'Discover' : undefined}
+				title={rail ? 'Discover' : undefined}
 				onpointerenter={() => (hoveredKey = 'nav:discover')}
 				onfocus={() => (focusedKey = 'nav:discover')}
 				onblur={() => (focusedKey = null)}
@@ -341,7 +359,7 @@
 				type="button"
 				class:active={view === 'duplicates'}
 				aria-current={view === 'duplicates' ? 'page' : undefined}
-				title={collapsed ? 'Conflicts' : undefined}
+				title={rail ? 'Conflicts' : undefined}
 				onpointerenter={() => (hoveredKey = 'nav:conflicts')}
 				onfocus={() => (focusedKey = 'nav:conflicts')}
 				onblur={() => (focusedKey = null)}
@@ -816,124 +834,51 @@
 		}
 	}
 
-	@media (min-width: 820px) {
-		.navigation-content {
-			transition: padding var(--motion-standard);
-		}
-
-		.collapsed .navigation-content {
-			padding-inline: 8px;
-		}
-
-		.collapsed nav button {
-			display: flex;
-			justify-content: center;
-			padding-inline: 0;
-		}
-
-		.collapsed .preview-nav-close {
-			display: none;
-		}
-
-		.collapsed .nav-label,
-		.collapsed .nav-count,
-		.collapsed .action-label {
-			display: none;
-		}
-
-		.collapsed .nav-divider {
-			margin-inline: 4px;
-		}
-
-		.collapsed .catalogue-status {
-			padding-inline: 0;
-		}
-
-		/* Narrow rail: icon-only actions stacked vertically; the pill slides up and down. */
-		.collapsed .status-actions {
-			flex-direction: column;
-		}
-
-		.collapsed .action-button {
-			width: 34px;
-			justify-content: center;
-			padding: 0;
-		}
+	.navigation-content {
+		transition: padding var(--motion-standard);
 	}
 
-	@media (max-width: 819px) {
-		.app-navigation {
-			height: auto;
-			align-self: auto;
-			border-right: 0;
-			border-bottom: 1px solid var(--color-border);
-		}
-
-		.navigation-content {
-			display: flex;
-			width: 100%;
-			height: auto;
-			flex-direction: row;
-			overflow-x: auto;
-			overflow-y: hidden;
-			padding: 8px 12px;
-		}
-
-		.nav-divider,
-		.catalogue-status {
-			display: none;
-		}
-
-		.sidebar-edge-zone {
-			display: none;
-		}
-
-		nav {
-			display: flex;
-			justify-content: flex-start;
-			gap: 4px;
-			margin: 0;
-			overflow-x: auto;
-		}
-
-		.preview-navigation {
-			margin-left: 4px;
-		}
-
-		.preview-nav-item.drop-before::before,
-		.preview-nav-item.drop-after::after {
-			top: 6px;
-			bottom: 6px;
-			width: 2px;
-			height: auto;
-		}
-
-		.preview-nav-item.drop-before::before {
-			right: auto;
-			left: -2px;
-		}
-
-		.preview-nav-item.drop-after::after {
-			right: -2px;
-			left: auto;
-		}
-
-		nav button {
-			display: inline-flex;
-			min-width: 44px;
-			min-height: 40px;
-			justify-content: center;
-			padding: 0 10px;
-		}
-
-		.nav-count {
-			display: none;
-		}
+	.collapsed .navigation-content {
+		padding-inline: 8px;
 	}
 
-	@media (max-width: 540px) {
-		nav button .nav-label {
-			display: none;
-		}
+	.collapsed nav button {
+		display: flex;
+		justify-content: center;
+		padding-inline: 0;
+	}
+
+	.collapsed .preview-nav-close {
+		display: none;
+	}
+
+	.collapsed .nav-label,
+	.collapsed .nav-count,
+	.collapsed .action-label {
+		display: none;
+	}
+
+	.collapsed .nav-divider {
+		margin-inline: 4px;
+	}
+
+	.collapsed .catalogue-status {
+		padding-inline: 0;
+	}
+
+	/* Narrow rail: icon-only actions stacked vertically; the pill slides up and down. */
+	.collapsed .status-actions {
+		flex-direction: column;
+	}
+
+	.collapsed .action-button {
+		width: 34px;
+		justify-content: center;
+		padding: 0;
+	}
+
+	/* The rail is the only shape a narrow window gets, so there is nothing to toggle. */
+	.narrow .sidebar-edge-zone {
+		display: none;
 	}
 </style>

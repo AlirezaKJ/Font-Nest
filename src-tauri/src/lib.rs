@@ -95,7 +95,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::greet,
             commands::scan_installed_fonts,
             commands::inspect_font_face,
             commands::inspect_font_glyph_outline,

@@ -7,7 +7,7 @@ use crate::catalogue::{self, CatalogueInspectionError, FontCatalogueStore};
 use crate::dto::{
     AppUpdateEvent, AppUpdateInfo, CommandError, FontCatalogue, FontFaceInspection,
     FontGlyphOutline, FontGlyphOutlineRequest, FontParserJsonExport, GoogleFontFamilyDetails,
-    GoogleFontInstallResult, GoogleFontPage, GoogleFontPageRequest, GoogleFontPreview, Greeting,
+    GoogleFontInstallResult, GoogleFontPage, GoogleFontPageRequest, GoogleFontPreview,
     InstallGoogleFontRequest, ValidatedLocalFont,
 };
 use crate::font_inspection::FontInspectionError;
@@ -16,7 +16,6 @@ use crate::google_fonts::{self, GoogleFontsError};
 use crate::local_fonts::{self, LocalFontError};
 use crate::release_notes::{self, ReleaseNotesError};
 
-const MAX_NAME_LENGTH: usize = 64;
 const FACE_ID_PREFIX: &str = "face:";
 const SHA1_HEX_LENGTH: usize = 40;
 const MAX_GLYPH_VARIATIONS: usize = 64;
@@ -90,18 +89,6 @@ impl CatalogueState {
             .inspect_glyph_outline(&request.face_id, request.codepoint, &request.variations)
             .map_err(|error| map_catalogue_inspection_error(&error))
     }
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
-pub fn greet(name: String) -> Result<Greeting, CommandError> {
-    let name = name.trim();
-
-    if name.is_empty() || name.chars().count() > MAX_NAME_LENGTH {
-        return Err(CommandError::invalid_name());
-    }
-
-    Ok(Greeting::new(name))
 }
 
 #[tauri::command]
@@ -522,23 +509,9 @@ mod tests {
     use crate::dto::{FontGlyphOutlineRequest, FontGlyphVariationValue};
 
     use super::{
-        greet, is_trusted_app_origin, is_trusted_origin_header, update_version_matches,
-        validate_face_id, validate_glyph_outline_request,
+        is_trusted_app_origin, is_trusted_origin_header, update_version_matches, validate_face_id,
+        validate_glyph_outline_request,
     };
-
-    #[test]
-    fn greeting_uses_a_trimmed_name() {
-        let greeting = greet("  Akari  ".to_owned()).expect("a valid greeting");
-
-        assert_eq!(greeting.message, "Welcome to FontNest, Akari.");
-    }
-
-    #[test]
-    fn greeting_rejects_an_empty_name() {
-        let error = greet("   ".to_owned()).expect_err("an empty name must be rejected");
-
-        assert_eq!(error.code, "invalid_name");
-    }
 
     #[test]
     fn updater_installation_requires_the_version_that_was_presented() {

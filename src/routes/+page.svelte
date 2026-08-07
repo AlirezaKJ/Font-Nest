@@ -38,7 +38,7 @@
 		fontOrigin,
 		isSystemOnly
 	} from '$lib/fonts/font-origin';
-	import { importLocalFontPreview } from '$lib/fonts/local-fonts';
+	import { importLocalFontPreview, releaseLocalFontPreview } from '$lib/fonts/local-fonts';
 	import { hasUnseenRelease } from '$lib/release-notes/loader';
 	import { reorderIds, type ReorderPosition } from '$lib/reorder';
 	import { isStickySurfaceElevated } from '$lib/sticky-surface';
@@ -64,6 +64,7 @@
 	const MAX_DETAIL_FACES = 12;
 	const UPDATE_CHECK_DELAY_MS = 8_000;
 	const PREFERENCES_KEY = 'fontnest.preferences.v1';
+	const PREFERENCES_SAVE_DELAY_MS = 400;
 
 	const SPACING_OPTIONS: DiscoverFilterOption[] = [
 		{ value: 'all', label: 'Any spacing' },
@@ -151,6 +152,7 @@
 	let prefersReducedMotion = $state(false);
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
 	let updateCheckTimer: ReturnType<typeof setTimeout> | undefined;
+	let preferencesTimer: ReturnType<typeof setTimeout> | null = null;
 
 	let originOptions = $derived.by<DiscoverFilterOption[]>(() => {
 		const present = new Set(catalogue?.families.flatMap((family) => family.origins) ?? []);
@@ -296,6 +298,10 @@
 
 		colorScheme.addEventListener('change', handleColorScheme);
 		window.addEventListener('keydown', handleKeydown);
+		// Closing the window or hiding it mid-sentence must not lose the specimen text
+		// the debounce is still holding.
+		window.addEventListener('pagehide', flushPreferences);
+		document.addEventListener('visibilitychange', handleVisibilityChange);
 		void refreshCatalogue();
 
 		unseenRelease = hasUnseenRelease();
@@ -319,6 +325,9 @@
 		return () => {
 			colorScheme.removeEventListener('change', handleColorScheme);
 			window.removeEventListener('keydown', handleKeydown);
+			window.removeEventListener('pagehide', flushPreferences);
+			document.removeEventListener('visibilitychange', handleVisibilityChange);
+			flushPreferences();
 			if (toastTimer) clearTimeout(toastTimer);
 			if (updateCheckTimer) clearTimeout(updateCheckTimer);
 		};
@@ -359,6 +368,10 @@
 	}
 
 	function savePreferences() {
+		if (preferencesTimer) {
+			clearTimeout(preferencesTimer);
+			preferencesTimer = null;
+		}
 		localStorage.setItem(
 			PREFERENCES_KEY,
 			JSON.stringify({
@@ -370,6 +383,22 @@
 				pinnedFamilyIds
 			})
 		);
+	}
+
+	// Specimen text changes on every keystroke. Serializing the whole preference blob
+	// and writing it that often is wasted work, so typing coalesces into one write.
+	// Discrete actions (theme, density, saved previews) still persist immediately.
+	function queuePreferencesSave() {
+		if (preferencesTimer) clearTimeout(preferencesTimer);
+		preferencesTimer = setTimeout(savePreferences, PREFERENCES_SAVE_DELAY_MS);
+	}
+
+	function flushPreferences() {
+		if (preferencesTimer) savePreferences();
+	}
+
+	function handleVisibilityChange() {
+		if (document.visibilityState === 'hidden') flushPreferences();
 	}
 
 	// Focus outlines are opt-in. The attribute flips the --focus-ring tokens so every
@@ -431,7 +460,7 @@
 
 	function setPreviewText(value: string) {
 		previewText = value;
-		savePreferences();
+		queuePreferencesSave();
 	}
 
 	function toggleSidebar() {
@@ -717,10 +746,17 @@
 	async function openPreviewFilePicker() {
 		try {
 			const validated = await importLocalFontPreview();
-			if (validated) localPreview = validated;
+			if (!validated) return;
+			releaseLocalFontPreview(localPreview?.previewFamily);
+			localPreview = validated;
 		} catch (error) {
 			showToast(commandErrorMessage(error), 'error');
 		}
+	}
+
+	function closeLocalPreview() {
+		releaseLocalFontPreview(localPreview?.previewFamily);
+		localPreview = null;
 	}
 
 	function copyValue(label: string, value: string) {
@@ -1324,7 +1360,7 @@
 {/if}
 
 {#if localPreview}
-	<LocalFontPreview font={localPreview} {previewText} onClose={() => (localPreview = null)} />
+	<LocalFontPreview font={localPreview} {previewText} onClose={closeLocalPreview} />
 {/if}
 
 <style>
@@ -2223,14 +2259,12 @@
 		}
 	}
 
+	/* A narrow window keeps its sidebar; it just becomes an icon rail. Folding it into a
+	   horizontal strip above the content reads as a different app every time you resize. */
 	@media (max-width: 819px) {
-		.app-shell {
-			display: block;
-		}
-
-		main {
-			height: calc(var(--app-content-height) - 57px);
-			min-height: 0;
+		.app-shell,
+		.app-shell.sidebar-collapsed {
+			grid-template-columns: 56px minmax(0, 1fr);
 		}
 	}
 

@@ -5,7 +5,6 @@ import {
 	checkForAppUpdate,
 	exportFontFaceParserJson,
 	getGoogleFontDetails,
-	greet,
 	inspectFontFace,
 	inspectFontGlyphOutline,
 	installGoogleFont,
@@ -21,24 +20,6 @@ vi.mock('@tauri-apps/api/core', () => ({
 		onmessage: (message: T) => void = () => undefined;
 	}
 }));
-
-describe('greet', () => {
-	beforeEach(() => {
-		vi.mocked(invoke).mockReset();
-	});
-
-	it('invokes the typed Rust greeting command', async () => {
-		const response = {
-			appName: 'FontNest',
-			message: 'Welcome to FontNest, Akari.',
-			version: '0.1.0'
-		};
-		vi.mocked(invoke).mockResolvedValue(response);
-
-		await expect(greet('Akari')).resolves.toEqual(response);
-		expect(invoke).toHaveBeenCalledWith('greet', { name: 'Akari' });
-	});
-});
 
 describe('scanInstalledFonts', () => {
 	beforeEach(() => {

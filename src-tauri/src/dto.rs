@@ -4,15 +4,6 @@ use ts_rs::TS;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/bindings/")]
-pub struct Greeting {
-    pub app_name: &'static str,
-    pub message: String,
-    pub version: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct AppUpdateInfo {
     pub current_version: String,
     pub version: String,
@@ -27,16 +18,6 @@ pub enum AppUpdateEvent {
     DownloadStarted { total: Option<u32> },
     DownloadProgress { downloaded: u32, total: Option<u32> },
     Installing,
-}
-
-impl Greeting {
-    pub fn new(name: &str) -> Self {
-        Self {
-            app_name: "FontNest",
-            message: format!("Welcome to FontNest, {name}."),
-            version: env!("CARGO_PKG_VERSION"),
-        }
-    }
 }
 
 /// Where a font came from, ordered from the fonts the operating system owns to the ones
@@ -387,13 +368,6 @@ pub struct CommandError {
 }
 
 impl CommandError {
-    pub const fn invalid_name() -> Self {
-        Self {
-            code: "invalid_name",
-            message: "Name must contain between 1 and 64 characters.",
-        }
-    }
-
     pub const fn catalogue_unavailable() -> Self {
         Self {
             code: "catalogue_unavailable",

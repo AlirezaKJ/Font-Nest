@@ -82,16 +82,16 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [x] **P0** Correct light-mode tertiary text contrast for small labels and verify every foreground/surface token pairing.
 - [ ] **P1** Add keyboard and assistive-technology reordering for saved previews.
 - [ ] **P1** Make glyph coverage truthful; never let system fallback masquerade as coverage in the selected font.
-- [ ] **P1** Reconcile Tauri's `minWidth: 920` with the CSS breakpoints so Windows Snap and compact layouts are actually reachable.
-- [ ] **P1** Make preview size controls accurate below 40px instead of clamping rendered output to 40px.
-- [ ] **P2** Release every dynamically loaded local `FontFace` and revoke associated object URLs when previews change or close.
+- [x] **P1** Reconcile Tauri's `minWidth: 920` with the CSS breakpoints so Windows Snap and compact layouts are actually reachable. Done 2026-08-07: `minWidth` is 520 and `minHeight` 480, so every authored `max-width` breakpoint is reachable; `tauri-config.spec.ts` fails if a narrower breakpoint is ever added.
+- [x] **P1** Make preview size controls accurate below 40px instead of clamping rendered output to 40px.
+- [x] **P2** Release every dynamically loaded local `FontFace` and revoke associated object URLs when previews change or close. Done 2026-08-07: `activateLocalFontPreview` counts holders and `releaseLocalFontPreview` removes the face from the document when the last one lets go. No object URLs exist to revoke yet; provider previews still arrive as data URLs and local previews render through the `fontnest-preview` protocol, so revocation lands with the binary transport work in section 7.
 - [x] **P2** Apply the resolved theme before first paint to prevent a light-theme startup flash.
 - [ ] **P2** Bundle the approved Geist and Instrument Serif WOFF2 assets locally with complete `@font-face` definitions and system fallbacks.
 - [ ] **P2** Announce blocking errors assertively and keep safe technical details copyable.
 - [ ] **P2** Remove slider/layout animations that lag direct manipulation; remove decorative style-row entrance choreography.
 - [ ] **P3** Split the roughly 2,000-line route and Discover component into feature views, stores, domain adapters, and reusable controls.
 - [ ] **P3** Consolidate duplicated CSS, shared filter controls, specimen utilities, `AppView` definitions, and safe font-stack code.
-- [ ] **P3** Remove the scaffold greeting command/tests and either integrate or delete the unused `FontInspector` component.
+- [x] **P3** Remove the scaffold greeting command/tests and either integrate or delete the unused `FontInspector` component. Done 2026-08-07: the `greet` command, `Greeting` DTO and binding, the `invalid_name` error, and `FontInspector.svelte` are all gone.
 - [ ] **P3** Remove unused CSS selectors and restore a clean `pnpm lint` baseline without overwriting unrelated work.
 - [ ] **P3** Tokenize and document the intentionally dark title bar, including Windows close-button colors.
 - [ ] **P3** Disable custom scrollbar styling in forced-colors mode and reconsider it on platforms where native behavior is clearer.
@@ -297,7 +297,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P1** Select face, weight, width, slant, and style independently.
 - [ ] **P1** Remember controls per family and offer an explicit reset to defaults.
 - [ ] **P1** Add calm load/error/retry states that never silently substitute a fallback.
-- [ ] **P2** Debounce preference writes instead of persisting on every specimen keystroke.
+- [x] **P2** Debounce preference writes instead of persisting on every specimen keystroke. Done 2026-08-07: typing coalesces into one write after 400ms and flushes on `pagehide`/hidden; discrete actions still persist immediately.
 - [ ] **P2** Export specimen sessions as JSON and proof sheets as PNG/PDF/print.
 - [ ] **P2** Add dynamic language-aware pangrams, bidirectional samples, vertical writing, and custom specimen libraries.
 - [ ] **P2** Add classic kerning and spacing proof texts (kern-king-style pair strings and spacing samples) to the built-in specimen library.

@@ -4,7 +4,8 @@ import type { ValidatedLocalFont } from '$lib/bindings/ValidatedLocalFont';
 import {
 	activateLocalFontPreview,
 	clearLocalFontPreviews,
-	importLocalFontPreview
+	importLocalFontPreview,
+	releaseLocalFontPreview
 } from './local-fonts';
 
 class TestFontFace {
@@ -85,5 +86,57 @@ describe('importLocalFontPreview', () => {
 		await activateLocalFontPreview(font);
 
 		expect(add).toHaveBeenCalledTimes(1);
+	});
+
+	it('loads a family once when two views ask for it at the same time', async () => {
+		const add = vi.fn();
+		vi.stubGlobal('FontFace', TestFontFace);
+		vi.stubGlobal('document', { fonts: { add, delete: vi.fn() } });
+		const font = validatedFont();
+
+		await Promise.all([activateLocalFontPreview(font), activateLocalFontPreview(font)]);
+
+		expect(add).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('releaseLocalFontPreview', () => {
+	it('removes the face from the document once the last holder releases it', async () => {
+		const remove = vi.fn();
+		vi.stubGlobal('FontFace', TestFontFace);
+		vi.stubGlobal('document', { fonts: { add: vi.fn(), delete: remove } });
+		const font = validatedFont();
+
+		await activateLocalFontPreview(font);
+		await activateLocalFontPreview(font);
+
+		releaseLocalFontPreview(font.previewFamily);
+		expect(remove).not.toHaveBeenCalled();
+
+		releaseLocalFontPreview(font.previewFamily);
+		expect(remove).toHaveBeenCalledTimes(1);
+	});
+
+	it('reloads a family that was fully released', async () => {
+		const add = vi.fn();
+		vi.stubGlobal('FontFace', TestFontFace);
+		vi.stubGlobal('document', { fonts: { add, delete: vi.fn() } });
+		const font = validatedFont();
+
+		await activateLocalFontPreview(font);
+		releaseLocalFontPreview(font.previewFamily);
+		await activateLocalFontPreview(font);
+
+		expect(add).toHaveBeenCalledTimes(2);
+	});
+
+	it('ignores an unknown or missing family', () => {
+		const remove = vi.fn();
+		vi.stubGlobal('document', { fonts: { add: vi.fn(), delete: remove } });
+
+		releaseLocalFontPreview(null);
+		releaseLocalFontPreview('FontNestPreview-never-loaded');
+
+		expect(remove).not.toHaveBeenCalled();
 	});
 });

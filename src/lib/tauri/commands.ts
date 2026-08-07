@@ -7,17 +7,12 @@ import type { FontFaceInspection } from '$lib/bindings/FontFaceInspection';
 import type { FontGlyphOutline } from '$lib/bindings/FontGlyphOutline';
 import type { FontGlyphOutlineRequest } from '$lib/bindings/FontGlyphOutlineRequest';
 import type { FontParserJsonExport } from '$lib/bindings/FontParserJsonExport';
-import type { Greeting } from '$lib/bindings/Greeting';
 import type { GoogleFontFamilyDetails } from '$lib/bindings/GoogleFontFamilyDetails';
 import type { GoogleFontInstallResult } from '$lib/bindings/GoogleFontInstallResult';
 import type { GoogleFontPage } from '$lib/bindings/GoogleFontPage';
 import type { GoogleFontPageRequest } from '$lib/bindings/GoogleFontPageRequest';
 import type { GoogleFontPreview } from '$lib/bindings/GoogleFontPreview';
 import type { ValidatedLocalFont } from '$lib/bindings/ValidatedLocalFont';
-
-export function greet(name: string): Promise<Greeting> {
-	return invoke<Greeting>('greet', { name });
-}
 
 export function scanInstalledFonts(): Promise<FontCatalogue> {
 	return invoke<FontCatalogue>('scan_installed_fonts');
