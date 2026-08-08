@@ -8,6 +8,7 @@ mod font_variations;
 mod google_fonts;
 mod local_fonts;
 mod managed_installations;
+mod managed_storage;
 mod release_notes;
 
 /// Starts the `FontNest` desktop application.
@@ -64,10 +65,18 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
 
+            // Managed font state is claimed once, at startup: this process takes the writer lock
+            // and migrates the ledger, or the whole session stays read-only. Every command that
+            // would mutate managed fonts checks this state before it does anything.
             let app_data_dir = app.path().app_data_dir()?;
-            if let Err(error) = google_fonts::initialize_storage(&app_data_dir) {
-                log::error!("Managed font storage could not be initialized: {error}");
+            let managed_storage = managed_storage::ManagedStorage::initialize(&app_data_dir);
+            if let Some(reason) = managed_storage.recovery_reason() {
+                log::error!(
+                    "FontNest started in read-only recovery mode: {reason:?}. Installing, updating, and removing fonts is disabled."
+                );
             }
+            app.manage(managed_storage);
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -106,6 +115,7 @@ pub fn run() {
             commands::get_google_font_details,
             commands::prepare_google_font_preview,
             commands::install_google_font,
+            commands::managed_storage_status,
             commands::fetch_remote_changelog,
             commands::check_for_app_update,
             commands::install_app_update

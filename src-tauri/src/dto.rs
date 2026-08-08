@@ -361,6 +361,29 @@ pub struct ValidatedLocalFont {
     pub faces: Vec<LocalFontFaceSummary>,
 }
 
+/// Why `FontNest` cannot mutate managed font state right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub enum ManagedStorageRecovery {
+    /// The managed-installation ledger could not be opened, created, or migrated.
+    LedgerUnavailable,
+    /// The ledger was written by a newer `FontNest` than this one.
+    SchemaTooNew,
+    /// Another `FontNest` process holds the writer lock for managed font state.
+    Locked,
+}
+
+/// Whether installing, updating, uninstalling, repairing, and restoring fonts are available in
+/// this session. Browsing, previewing, and inspecting stay available either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct ManagedStorageStatus {
+    pub writable: bool,
+    pub reason: Option<ManagedStorageRecovery>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CommandError {
     pub code: &'static str,
@@ -512,6 +535,24 @@ impl CommandError {
         Self {
             code: "managed_storage_unavailable",
             message: "FontNest could not open its managed-installation ledger.",
+        }
+    }
+
+    /// The refusal a managed operation returns while `FontNest` is in read-only recovery mode.
+    pub const fn managed_storage_recovery(reason: ManagedStorageRecovery) -> Self {
+        match reason {
+            ManagedStorageRecovery::LedgerUnavailable => Self {
+                code: "managed_storage_recovery",
+                message: "FontNest could not open its managed-installation ledger, so installing and removing fonts is switched off until it recovers.",
+            },
+            ManagedStorageRecovery::SchemaTooNew => Self {
+                code: "managed_storage_schema_too_new",
+                message: "This font ledger was written by a newer FontNest. Update FontNest to manage fonts again.",
+            },
+            ManagedStorageRecovery::Locked => Self {
+                code: "managed_storage_locked",
+                message: "Another FontNest is already running and managing fonts on this computer.",
+            },
         }
     }
 

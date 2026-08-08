@@ -12,6 +12,7 @@ import type { GoogleFontInstallResult } from '$lib/bindings/GoogleFontInstallRes
 import type { GoogleFontPage } from '$lib/bindings/GoogleFontPage';
 import type { GoogleFontPageRequest } from '$lib/bindings/GoogleFontPageRequest';
 import type { GoogleFontPreview } from '$lib/bindings/GoogleFontPreview';
+import type { ManagedStorageStatus } from '$lib/bindings/ManagedStorageStatus';
 import type { ValidatedLocalFont } from '$lib/bindings/ValidatedLocalFont';
 
 export function scanInstalledFonts(): Promise<FontCatalogue> {
@@ -55,6 +56,11 @@ export function getGoogleFontDetails(familyId: string): Promise<GoogleFontFamily
 
 export function prepareGoogleFontPreview(artifactId: string): Promise<GoogleFontPreview> {
 	return invoke<GoogleFontPreview>('prepare_google_font_preview', { artifactId });
+}
+
+/** Whether this session may install, update, or remove managed fonts, and why not when it may not. */
+export function managedStorageStatus(): Promise<ManagedStorageStatus> {
+	return invoke<ManagedStorageStatus>('managed_storage_status');
 }
 
 export function installGoogleFont(

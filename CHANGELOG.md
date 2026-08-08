@@ -10,6 +10,17 @@ a bundled copy when you are offline.
 
 ## [Unreleased]
 
+### Changed
+
+- FontNest now keeps a version stamp on the record of the fonts it installed for you, and upgrades
+  that record in one step that either finishes or leaves it exactly as it was. Records written by
+  earlier versions are picked up as they are, with nothing lost.
+- If that record cannot be opened, or was written by a newer FontNest than the one you are running,
+  FontNest stays open as a read-only library: you can browse, preview and inspect everything, but
+  installing is switched off and Discover says why rather than letting an install fail halfway.
+  The same happens when a second FontNest is already running, so two copies can never install or
+  remove fonts at the same time.
+
 ### Fixed
 
 - The preview size slider now goes all the way down. Anything you set below 40px used to draw at

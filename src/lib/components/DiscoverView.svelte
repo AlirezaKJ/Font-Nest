@@ -6,6 +6,8 @@
 	import type { GoogleFontFamilyDetails } from '$lib/bindings/GoogleFontFamilyDetails';
 	import type { GoogleFontFamilySummary } from '$lib/bindings/GoogleFontFamilySummary';
 	import type { GoogleFontPage } from '$lib/bindings/GoogleFontPage';
+	import type { ManagedStorageRecovery } from '$lib/bindings/ManagedStorageRecovery';
+	import type { ManagedStorageStatus } from '$lib/bindings/ManagedStorageStatus';
 	import { contextMenu } from '$lib/context-menu/action';
 	import { writeClipboardText } from '$lib/context-menu/clipboard';
 	import { discoverFamilyContextMenu } from '$lib/context-menu/entries';
@@ -17,6 +19,7 @@
 		getGoogleFontDetails,
 		installGoogleFont,
 		listGoogleFonts,
+		managedStorageStatus,
 		prepareGoogleFontPreview
 	} from '$lib/tauri/commands';
 
@@ -50,6 +53,16 @@
 	};
 	const DEFAULT_SORT = 'trending';
 	const SKELETON_ROWS = [0, 1, 2, 3];
+
+	// Why FontNest is running as a read-only catalogue this session. The backend refuses managed
+	// operations in every one of these cases, so Discover explains it up front instead of letting
+	// the refusal arrive as a failed install.
+	const MANAGED_STORAGE_NOTICES: Record<ManagedStorageRecovery, string> = {
+		ledgerUnavailable:
+			'FontNest could not open its font ledger, so installing is off until it recovers',
+		schemaTooNew: 'This font ledger comes from a newer FontNest. Update FontNest to install',
+		locked: 'Another FontNest is already managing fonts on this computer'
+	};
 
 	const CATEGORY_OPTIONS: DiscoverFilterOption[] = [
 		{ value: 'all', label: 'All categories' },
@@ -179,6 +192,7 @@
 	} = $props();
 
 	let nativeMode = $state(false);
+	let managedStorage = $state<ManagedStorageStatus | null>(null);
 	let page = $state<GoogleFontPage | null>(null);
 	let details = $state<GoogleFontFamilyDetails | null>(null);
 	let selectedFamilyId = $state<string | null>(null);
@@ -223,6 +237,12 @@
 	const visiblePreviewIds = new SvelteSet<string>();
 	let previewUseOrder: string[] = [];
 
+	let installBlockedNotice = $derived(
+		managedStorage && !managedStorage.writable && managedStorage.reason
+			? MANAGED_STORAGE_NOTICES[managedStorage.reason]
+			: ''
+	);
+	let canInstall = $derived(nativeMode && !installBlockedNotice);
 	let families = $derived(page?.families ?? []);
 	let selectedFamily = $derived(
 		families.find((family) => family.id === selectedFamilyId) ?? null
@@ -272,6 +292,17 @@
 
 	onMount(() => {
 		nativeMode = '__TAURI_INTERNALS__' in window;
+		if (nativeMode) {
+			void managedStorageStatus()
+				.then((status) => {
+					if (!destroyed) managedStorage = status;
+				})
+				.catch(() => {
+					// A status FontNest cannot read is itself a reason not to offer installation.
+					if (!destroyed)
+						managedStorage = { writable: false, reason: 'ledgerUnavailable' };
+				});
+		}
 		void loadCatalogue(true);
 	});
 
@@ -691,7 +722,7 @@
 	}
 
 	async function confirmInstall() {
-		if (!details || !selectedArtifactIds.length || !nativeMode) return;
+		if (!details || !selectedArtifactIds.length || !canInstall) return;
 		installing = true;
 		try {
 			const artifactsToActivate = details.artifacts.filter((artifact) =>
@@ -1089,7 +1120,7 @@
 													type="checkbox"
 													checked={artifact.installed ||
 														selectedArtifactIds.includes(artifact.id)}
-													disabled={artifact.installed || !nativeMode}
+													disabled={artifact.installed || !canInstall}
 													onchange={() => toggleArtifact(artifact.id)}
 												/>
 												<span>
@@ -1112,13 +1143,20 @@
 													selectedBytes
 												)}</strong
 											>
-											<small>Per-user install · no administrator access</small
-											>
+											{#if installBlockedNotice}
+												<small class="install-blocked"
+													>{installBlockedNotice}</small
+												>
+											{:else}
+												<small
+													>Per-user install · no administrator access</small
+												>
+											{/if}
 										</div>
 										<button
 											type="button"
 											class="install-action"
-											disabled={!nativeMode ||
+											disabled={!canInstall ||
 												!selectedArtifactIds.length ||
 												installing}
 											onclick={() => (confirmingInstall = true)}
@@ -1206,7 +1244,7 @@
 			<button
 				type="button"
 				class="confirm-action"
-				disabled={installing}
+				disabled={installing || !canInstall}
 				onclick={confirmInstall}
 			>
 				{installing ? 'Installing securely…' : 'Install font files'}
@@ -1844,6 +1882,10 @@
 	.install-footer small {
 		color: var(--color-subtle);
 		font-size: var(--text-micro);
+	}
+
+	.install-footer small.install-blocked {
+		color: var(--color-warning);
 	}
 
 	.install-action,

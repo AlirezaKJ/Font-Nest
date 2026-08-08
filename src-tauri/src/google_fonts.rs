@@ -133,13 +133,6 @@ struct GoogleFontPage {
     limit: usize,
 }
 
-pub fn initialize_storage(app_data_dir: &Path) -> Result<(), GoogleFontsError> {
-    let repository = installation_repository(app_data_dir);
-    repository
-        .initialize()
-        .map_err(|_| GoogleFontsError::Database)
-}
-
 pub fn list_fonts(
     request: &GoogleFontPageRequestDto,
     app_data_dir: &Path,
@@ -357,7 +350,7 @@ fn bundled_manifest() -> Result<&'static GoogleFontsManifest, GoogleFontsError> 
 }
 
 fn installation_repository(app_data_dir: &Path) -> ManagedInstallationRepository {
-    ManagedInstallationRepository::new(app_data_dir.join("fontnest.sqlite3"))
+    ManagedInstallationRepository::in_app_data_dir(app_data_dir)
 }
 
 fn family_summary(family: &GoogleFontFamily, installed: bool) -> GoogleFontFamilySummary {

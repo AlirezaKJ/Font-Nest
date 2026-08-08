@@ -10,6 +10,7 @@ import {
 	installGoogleFont,
 	installAppUpdate,
 	listGoogleFonts,
+	managedStorageStatus,
 	prepareGoogleFontPreview,
 	scanInstalledFonts
 } from './commands';
@@ -140,6 +141,14 @@ describe('Google Fonts commands', () => {
 				artifactIds: ['gf:inter:regular']
 			}
 		});
+	});
+
+	it('reports why managed font operations are unavailable', async () => {
+		const response = { writable: false, reason: 'locked' };
+		vi.mocked(invoke).mockResolvedValue(response);
+
+		await expect(managedStorageStatus()).resolves.toEqual(response);
+		expect(invoke).toHaveBeenCalledWith('managed_storage_status');
 	});
 });
 

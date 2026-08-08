@@ -8,12 +8,13 @@ use crate::dto::{
     AppUpdateEvent, AppUpdateInfo, CommandError, FontCatalogue, FontFaceInspection,
     FontGlyphOutline, FontGlyphOutlineRequest, FontParserJsonExport, GoogleFontFamilyDetails,
     GoogleFontInstallResult, GoogleFontPage, GoogleFontPageRequest, GoogleFontPreview,
-    InstallGoogleFontRequest, ValidatedLocalFont,
+    InstallGoogleFontRequest, ManagedStorageStatus, ValidatedLocalFont,
 };
 use crate::font_inspection::FontInspectionError;
 use crate::font_platform;
 use crate::google_fonts::{self, GoogleFontsError};
 use crate::local_fonts::{self, LocalFontError};
+use crate::managed_storage::ManagedStorage;
 use crate::release_notes::{self, ReleaseNotesError};
 
 const FACE_ID_PREFIX: &str = "face:";
@@ -276,6 +277,14 @@ pub async fn prepare_google_font_preview(
         .map_err(map_google_fonts_error)
 }
 
+/// Reports whether managed font operations are available in this session, so the interface can
+/// explain a read-only recovery mode instead of offering actions that will be refused.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub fn managed_storage_status(app: tauri::AppHandle) -> ManagedStorageStatus {
+    app.state::<ManagedStorage>().status()
+}
+
 #[tauri::command]
 pub async fn install_google_font(
     request: InstallGoogleFontRequest,
@@ -283,6 +292,11 @@ pub async fn install_google_font(
     window: tauri::WebviewWindow,
 ) -> Result<GoogleFontInstallResult, CommandError> {
     ensure_trusted_window(&window)?;
+    // Fail closed: a ledger FontNest cannot read or trust means it cannot prove what it owns, so
+    // it must not register anything new with the operating system.
+    app.state::<ManagedStorage>()
+        .ensure_writable()
+        .map_err(CommandError::managed_storage_recovery)?;
     let cache_dir = app
         .path()
         .app_cache_dir()
