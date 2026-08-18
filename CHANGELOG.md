@@ -10,6 +10,21 @@ a bundled copy when you are offline.
 
 ## [Unreleased]
 
+### Added
+
+- Discover can now remove fonts it installed. Open a family you have installed and Remove takes
+  its files back out of Windows for your account.
+- Before it removes anything, FontNest checks that the file really is one it installed, and it
+  does not take its own records for that. It works out where the file should be from the
+  catalogue built into the app, then reads the file itself: the name, the folder it sits in, the
+  bytes it holds and what Windows currently has registered for it all have to agree. A file that
+  has been swapped, moved, linked somewhere else or that Windows protects is left exactly where
+  it is, and the app tells you which files it kept and why.
+- Removing a font does not delete it. The file is moved into a folder inside FontNest's own data,
+  so a removal that turns out to be wrong is a move back rather than a download. As with
+  installing, the whole removal is written down before it starts: if FontNest is closed or killed
+  halfway through, the next launch puts the fonts back.
+
 ### Changed
 
 - A font now keeps the same identity when its file is renamed or moved to another folder on the

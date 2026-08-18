@@ -7,8 +7,13 @@ use ttf_parser::{Face, name_id};
 /// mistaken for one of ours.
 const MANAGED_FILE_PREFIX: &str = "FontNest-";
 
+/// Where Windows records the fonts registered for the signed-in account only.
+#[cfg(windows)]
+const USER_FONTS_REGISTRY_KEY: &str = r"Software\Microsoft\Windows NT\CurrentVersion\Fonts";
+
 #[derive(Debug, Clone)]
 pub struct ValidatedFontMetadata {
+    pub family_name: String,
     pub full_name: String,
 }
 
@@ -64,7 +69,10 @@ pub fn validate_font(bytes: &[u8]) -> Result<ValidatedFontMetadata, FontPlatform
         return Err(FontPlatformError::InvalidMetadata);
     }
 
-    Ok(ValidatedFontMetadata { full_name })
+    Ok(ValidatedFontMetadata {
+        family_name,
+        full_name,
+    })
 }
 
 /// How much of the request the file manager could honour.
@@ -202,7 +210,19 @@ fn unicode_name(face: &Face<'_>, name_id: u16) -> Option<String> {
         .map(|name| name.trim().to_owned())
 }
 
-fn managed_file_name(
+/// The one file name a provider artifact may be installed under.
+///
+/// Install writes it and uninstall derives it again from the bundled manifest, so the name on the
+/// disk is checked against the provider's own record rather than against anything the ledger
+/// stored. The first twelve characters of the artifact hash are part of the name, which is what
+/// ties a file to the bytes it is supposed to hold.
+///
+/// # Errors
+///
+/// Returns [`FontPlatformError::InvalidFont`] when the artifact is not a `.ttf`, and
+/// [`FontPlatformError::InvalidMetadata`] when the name has nothing safe left in it or the hash
+/// is not a full hexadecimal digest.
+pub fn managed_file_name(
     original_file_name: &str,
     source_hash: &str,
 ) -> Result<String, FontPlatformError> {
@@ -252,6 +272,41 @@ pub fn user_font_directory() -> Result<PathBuf, FontPlatformError> {
         .join("Fonts"))
 }
 
+/// Nothing installs fonts on a platform `FontNest` cannot manage, so it reports no managed
+/// directory either rather than naming one nothing may write to.
+///
+/// # Errors
+///
+/// Always returns [`FontPlatformError::UnsupportedPlatform`].
+#[cfg(not(windows))]
+pub fn user_font_directory() -> Result<PathBuf, FontPlatformError> {
+    Err(FontPlatformError::UnsupportedPlatform)
+}
+
+/// The file the operating system currently maps a per-user font registration to, if any.
+///
+/// Uninstall asks this before it removes anything: a value that has come to name a different file
+/// belongs to another font now, and taking it away would unregister that font instead.
+#[cfg(windows)]
+#[must_use]
+pub fn registered_user_font_path(value_name: &str) -> Option<String> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE};
+
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(USER_FONTS_REGISTRY_KEY, KEY_QUERY_VALUE)
+        .ok()?
+        .get_value::<String, _>(value_name)
+        .ok()
+}
+
+/// No per-user font registry exists off Windows, so nothing is ever registered.
+#[cfg(not(windows))]
+#[must_use]
+pub fn registered_user_font_path(_value_name: &str) -> Option<String> {
+    None
+}
+
 /// Works out exactly where a font would be written and what it would be called in the registry,
 /// without touching either.
 ///
@@ -288,7 +343,7 @@ pub fn is_managed_installation_path(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    if !name.starts_with(MANAGED_FILE_PREFIX) || !name.to_ascii_lowercase().ends_with(".ttf") {
+    if !is_managed_file_name(name) {
         return false;
     }
     // Never follow a reparse point to a delete: the target could be anywhere on the computer.
@@ -312,6 +367,13 @@ pub fn is_managed_installation_path(path: &Path) -> bool {
 #[cfg(not(windows))]
 pub fn is_managed_installation_path(_path: &Path) -> bool {
     false
+}
+
+/// Whether a file name is one `FontNest` writes. It says nothing about where the file is, so it is
+/// only ever half of a decision.
+#[must_use]
+pub fn is_managed_file_name(name: &str) -> bool {
+    name.starts_with(MANAGED_FILE_PREFIX) && name.to_ascii_lowercase().ends_with(".ttf")
 }
 
 #[cfg(not(windows))]
@@ -378,9 +440,7 @@ pub fn install_planned_user_font(
     let registry_value_name = plan.registry_value_name.clone();
     let target_value = target.to_string_lossy().into_owned();
     let current_user = RegKey::predef(HKEY_CURRENT_USER);
-    let (fonts_key, _) = match current_user
-        .create_subkey("Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts")
-    {
+    let (fonts_key, _) = match current_user.create_subkey(USER_FONTS_REGISTRY_KEY) {
         Ok(result) => result,
         Err(error) => {
             let _ = std::fs::remove_file(&target);
@@ -440,12 +500,11 @@ pub fn rollback_user_font(installation: &PlatformInstallation) -> Result<(), Fon
     unregister_font_resource(&installation.installed_path);
     let target_value = installation.installed_path.to_string_lossy().into_owned();
     let current_user = RegKey::predef(HKEY_CURRENT_USER);
-    if let Ok(fonts_key) = current_user.open_subkey_with_flags(
-        "Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts",
-        KEY_QUERY_VALUE | KEY_SET_VALUE,
-    ) && fonts_key
-        .get_value::<String, _>(&installation.registry_value_name)
-        .is_ok_and(|existing| existing.eq_ignore_ascii_case(&target_value))
+    if let Ok(fonts_key) = current_user
+        .open_subkey_with_flags(USER_FONTS_REGISTRY_KEY, KEY_QUERY_VALUE | KEY_SET_VALUE)
+        && fonts_key
+            .get_value::<String, _>(&installation.registry_value_name)
+            .is_ok_and(|existing| existing.eq_ignore_ascii_case(&target_value))
     {
         let _ = fonts_key.delete_value(&installation.registry_value_name);
     }
@@ -461,6 +520,89 @@ pub fn rollback_user_font(installation: &PlatformInstallation) -> Result<(), Fon
 
 #[cfg(not(windows))]
 pub fn rollback_user_font(_installation: &PlatformInstallation) -> Result<(), FontPlatformError> {
+    Err(FontPlatformError::UnsupportedPlatform)
+}
+
+/// Stops the operating system serving a font, leaving the file itself alone.
+///
+/// This runs before the file moves, so an uninstall that stops here has taken a font out of use
+/// without having taken it away. A registry value that has come to name a different file is left
+/// exactly as it is and reported as a conflict: it belongs to another font now, and removing it
+/// would unregister that one instead.
+///
+/// # Errors
+///
+/// Returns [`FontPlatformError::RegistryConflict`] when the value names another file, and the I/O
+/// error when the registry cannot be read or written.
+#[cfg(windows)]
+pub fn unregister_user_font(
+    registry_value_name: &str,
+    path: &Path,
+) -> Result<(), FontPlatformError> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE};
+
+    unregister_font_resource(path);
+    let fonts_key = match RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(USER_FONTS_REGISTRY_KEY, KEY_QUERY_VALUE | KEY_SET_VALUE)
+    {
+        Ok(key) => key,
+        // No per-user font key at all means nothing is registered to remove.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(FontPlatformError::Io(error)),
+    };
+    match fonts_key.get_value::<String, _>(registry_value_name) {
+        Ok(existing) if crate::managed_ownership::registers_the_same_file(&existing, path) => {
+            fonts_key
+                .delete_value(registry_value_name)
+                .map_err(FontPlatformError::Io)?;
+        }
+        Ok(_) => return Err(FontPlatformError::RegistryConflict),
+        // Already gone, which is the state this function is trying to reach.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(FontPlatformError::Io(error)),
+    }
+    broadcast_font_change();
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn unregister_user_font(
+    _registry_value_name: &str,
+    _path: &Path,
+) -> Result<(), FontPlatformError> {
+    Err(FontPlatformError::UnsupportedPlatform)
+}
+
+/// Puts a font back into service after an uninstall was undone.
+///
+/// # Errors
+///
+/// Returns [`FontPlatformError::RegistrationFailed`] when the operating system refuses the font,
+/// and the I/O error when the registry cannot be written.
+#[cfg(windows)]
+pub fn register_user_font(registry_value_name: &str, path: &Path) -> Result<(), FontPlatformError> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
+    let (fonts_key, _) = RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey(USER_FONTS_REGISTRY_KEY)
+        .map_err(FontPlatformError::Io)?;
+    fonts_key
+        .set_value(registry_value_name, &path.to_string_lossy().into_owned())
+        .map_err(FontPlatformError::Io)?;
+    if !register_font_resource(path) {
+        return Err(FontPlatformError::RegistrationFailed);
+    }
+    broadcast_font_change();
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn register_user_font(
+    _registry_value_name: &str,
+    _path: &Path,
+) -> Result<(), FontPlatformError> {
     Err(FontPlatformError::UnsupportedPlatform)
 }
 

@@ -14,14 +14,19 @@
 	import { KeyedTaskQueue, pickPreviewEvictionCandidate } from '$lib/discover/preview-queue';
 	import { pickPreviewArtifact } from '$lib/discover/preview-weights';
 	import { managedRecoveryNotice } from '$lib/discover/recovery-notice';
-	import { activateInstalledGoogleFont } from '$lib/fonts/session-fonts';
+	import { removalRefusalNote } from '$lib/fonts/removal-refusals';
+	import {
+		activateInstalledGoogleFont,
+		deactivateGoogleFontArtifacts
+	} from '$lib/fonts/session-fonts';
 	import { isStickySurfaceElevated } from '$lib/sticky-surface';
 	import {
 		getGoogleFontDetails,
 		installGoogleFont,
 		listGoogleFonts,
 		managedStorageStatus,
-		prepareGoogleFontPreview
+		prepareGoogleFontPreview,
+		uninstallGoogleFont
 	} from '$lib/tauri/commands';
 
 	import DiscoverFilterMenu, { type DiscoverFilterOption } from './DiscoverFilterMenu.svelte';
@@ -213,6 +218,8 @@
 	let loadingDetails = $state(false);
 	let installing = $state(false);
 	let confirmingInstall = $state(false);
+	let removing = $state(false);
+	let confirmingRemoval = $state(false);
 	let catalogueError = $state('');
 	let detailsError = $state('');
 	let previewFamilies = $state<Record<string, string>>({});
@@ -225,6 +232,7 @@
 	let discoverControls = $state<HTMLElement>();
 	let discoverControlsElevated = $state(false);
 	let installDialog = $state<HTMLDialogElement>();
+	let removalDialog = $state<HTMLDialogElement>();
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
 	let weightTimer: ReturnType<typeof setTimeout> | undefined;
 	let weightNoteTimer: ReturnType<typeof setTimeout> | undefined;
@@ -245,6 +253,9 @@
 	);
 	let recoveryNotice = $derived(managedRecoveryNotice(managedStorage));
 	let canInstall = $derived(nativeMode && !installBlockedNotice);
+	let installedArtifacts = $derived(
+		(details?.artifacts ?? []).filter((artifact) => artifact.installed)
+	);
 	let families = $derived(page?.families ?? []);
 	let selectedFamily = $derived(
 		families.find((family) => family.id === selectedFamilyId) ?? null
@@ -319,6 +330,15 @@
 			installDialog.showModal();
 		} else if (!confirmingInstall && installDialog.open) {
 			installDialog.close();
+		}
+	});
+
+	$effect(() => {
+		if (!removalDialog) return;
+		if (confirmingRemoval && !removalDialog.open) {
+			removalDialog.showModal();
+		} else if (!confirmingRemoval && removalDialog.open) {
+			removalDialog.close();
 		}
 	});
 
@@ -507,6 +527,7 @@
 		loadingDetails = false;
 		selectedArtifactIds = [];
 		confirmingInstall = false;
+		confirmingRemoval = false;
 	}
 
 	async function loadDetails(familyId: string) {
@@ -776,6 +797,46 @@
 			onToast(commandErrorMessage(error, 'FontNest could not install that font.'), 'error');
 		} finally {
 			installing = false;
+		}
+	}
+
+	async function confirmRemoval() {
+		if (!details || !installedArtifacts.length || !canInstall) return;
+		removing = true;
+		const familyId = details.id;
+		try {
+			const result = await uninstallGoogleFont(familyId, []);
+			const removedIds = new Set(result.removedArtifactIds);
+			deactivateGoogleFontArtifacts(result.familyName, result.removedArtifactIds);
+			const remaining = details.artifacts.map((artifact) => ({
+				...artifact,
+				installed: artifact.installed && !removedIds.has(artifact.id)
+			}));
+			details = { ...details, artifacts: remaining };
+			const stillInstalled = remaining.some((artifact) => artifact.installed);
+			if (page) {
+				page = {
+					...page,
+					families: page.families.map((family) =>
+						family.id === familyId ? { ...family, installed: stillInstalled } : family
+					)
+				};
+			}
+			confirmingRemoval = false;
+			// A removal that kept files is not a failure, but it is not a clean success either:
+			// say what stayed behind rather than letting the count quietly disagree.
+			const kept = removalRefusalNote(result.refused);
+			onToast(
+				result.removedArtifactIds.length
+					? `${result.familyName} was removed from your Windows account.${kept ? ` ${kept}` : ''}`
+					: kept || `${result.familyName} was already gone.`,
+				result.refused.length ? 'error' : 'success'
+			);
+			await onInstalled();
+		} catch (error) {
+			onToast(commandErrorMessage(error, 'FontNest could not remove that font.'), 'error');
+		} finally {
+			removing = false;
 		}
 	}
 
@@ -1167,20 +1228,33 @@
 												>
 											{/if}
 										</div>
-										<button
-											type="button"
-											class="install-action"
-											disabled={!canInstall ||
-												!selectedArtifactIds.length ||
-												installing}
-											onclick={() => (confirmingInstall = true)}
-										>
-											{details.artifacts.every(
-												(artifact) => artifact.installed
-											)
-												? 'Managed'
-												: `Review ${selectedArtifactIds.length} ${selectedArtifactIds.length === 1 ? 'file' : 'files'}`}
-										</button>
+										<div class="install-actions">
+											{#if installedArtifacts.length}
+												<button
+													type="button"
+													class="remove-action"
+													disabled={!canInstall || installing || removing}
+													onclick={() => (confirmingRemoval = true)}
+												>
+													{removing ? 'Removing…' : 'Remove'}
+												</button>
+											{/if}
+											<button
+												type="button"
+												class="install-action"
+												disabled={!canInstall ||
+													!selectedArtifactIds.length ||
+													installing ||
+													removing}
+												onclick={() => (confirmingInstall = true)}
+											>
+												{details.artifacts.every(
+													(artifact) => artifact.installed
+												)
+													? 'Managed'
+													: `Review ${selectedArtifactIds.length} ${selectedArtifactIds.length === 1 ? 'file' : 'files'}`}
+											</button>
+										</div>
 									</footer>
 								{/if}
 							</section>
@@ -1262,6 +1336,55 @@
 				onclick={confirmInstall}
 			>
 				{installing ? 'Installing securely…' : 'Install font files'}
+			</button>
+		</div>
+	</dialog>
+
+	<dialog
+		bind:this={removalDialog}
+		class="install-dialog"
+		aria-labelledby="removal-dialog-title"
+		onclose={() => (confirmingRemoval = false)}
+		oncancel={(event) => {
+			if (removing) event.preventDefault();
+			else confirmingRemoval = false;
+		}}
+		onclick={(event) => {
+			if (event.target === removalDialog && !removing) confirmingRemoval = false;
+		}}
+	>
+		<div class="dialog-icon"><Icon name="font" size={20} /></div>
+		<h2 id="removal-dialog-title">Remove {details.family}?</h2>
+		<p>
+			FontNest will unregister {installedArtifacts.length}
+			{installedArtifacts.length === 1 ? 'file' : 'files'} and move them out of your font folder.
+			Any file it cannot prove it installed is left where it is.
+		</p>
+		<dl>
+			<div>
+				<dt>Scope</dt>
+				<dd>Current user</dd>
+			</div>
+			<div>
+				<dt>Files</dt>
+				<dd>{installedArtifacts.length}</dd>
+			</div>
+			<div>
+				<dt>Kept</dt>
+				<dd>Set aside, not deleted</dd>
+			</div>
+		</dl>
+		<div class="dialog-actions">
+			<button type="button" disabled={removing} onclick={() => (confirmingRemoval = false)}
+				>Cancel</button
+			>
+			<button
+				type="button"
+				class="confirm-action"
+				disabled={removing || !canInstall}
+				onclick={confirmRemoval}
+			>
+				{removing ? 'Removing…' : 'Remove font files'}
 			</button>
 		</div>
 	</dialog>
@@ -1903,6 +2026,7 @@
 	}
 
 	.install-action,
+	.remove-action,
 	.load-more-row button,
 	.catalogue-state button,
 	.dialog-actions button {
@@ -1926,7 +2050,14 @@
 		background: var(--color-accent);
 	}
 
+	.install-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--space-xs);
+	}
+
 	.install-action:disabled,
+	.remove-action:disabled,
 	.load-more-row button:disabled {
 		opacity: 0.5;
 	}
@@ -2212,8 +2343,13 @@
 			justify-content: flex-start;
 		}
 
-		.install-action {
+		.install-actions {
 			width: 100%;
+		}
+
+		.install-action,
+		.remove-action {
+			flex: 1;
 		}
 	}
 </style>

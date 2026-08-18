@@ -10,7 +10,8 @@ use crate::dto::{
     AppUpdateEvent, AppUpdateInfo, CommandError, FontCatalogue, FontFaceInspection,
     FontGlyphOutline, FontGlyphOutlineRequest, FontParserJsonEvent, FontParserJsonRequest,
     GoogleFontFamilyDetails, GoogleFontInstallResult, GoogleFontPage, GoogleFontPageRequest,
-    GoogleFontPreview, InstallGoogleFontRequest, ManagedStorageStatus, ValidatedLocalFont,
+    GoogleFontPreview, GoogleFontUninstallResult, InstallGoogleFontRequest, ManagedStorageStatus,
+    UninstallGoogleFontRequest, ValidatedLocalFont,
 };
 use crate::font_identity::{IdentityKind, is_well_formed};
 use crate::font_inspection::{self, CancelToken, FontInspectionError, ParserJsonSnapshot};
@@ -550,6 +551,35 @@ pub async fn install_google_font(
     google_fonts::install_fonts(&request, &cache_dir, &app_data_dir)
         .await
         .map_err(map_google_fonts_error)
+}
+
+/// Takes back fonts `FontNest` installed from the online catalogue.
+///
+/// Every font is proven against the computer before anything is removed, and a font that cannot be
+/// proven is reported in the result rather than removed anyway, so the interface can say which
+/// ones were left alone and why.
+#[tauri::command]
+pub async fn uninstall_google_font(
+    request: UninstallGoogleFontRequest,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<GoogleFontUninstallResult, CommandError> {
+    ensure_trusted_window(&window)?;
+    // Fail closed: a ledger FontNest cannot read or trust cannot prove what it owns, so it must
+    // not take anything off this computer.
+    app.state::<ManagedStorage>()
+        .ensure_writable()
+        .map_err(CommandError::managed_storage_recovery)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| CommandError::managed_storage_unavailable())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        google_fonts::uninstall_fonts(&request, &app_data_dir)
+    })
+    .await
+    .map_err(|_| CommandError::font_uninstall_failed())?
+    .map_err(map_google_fonts_error)
 }
 
 #[tauri::command]

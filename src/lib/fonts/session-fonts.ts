@@ -4,8 +4,16 @@ import { prepareGoogleFontPreview } from '$lib/tauri/commands';
 
 type PreviewLoader = (artifactId: string) => Promise<GoogleFontPreview>;
 
+/** Joins a family and an artifact into one key, using a character neither can hold. */
+const SEPARATOR = String.fromCharCode(0);
+
 const sessionFaces = new Map<string, FontFace>();
 const pendingFaces = new Map<string, Promise<void>>();
+
+/** One session face is a family and an artifact together, joined by a character neither can hold. */
+function faceKey(familyName: string, artifactId: string): string {
+	return familyName + SEPARATOR + artifactId;
+}
 
 export function fontFaceDescriptors(styleName: string): FontFaceDescriptors {
 	const normalized = styleName.replace(/[-_]/g, ' ').toLocaleLowerCase();
@@ -68,6 +76,20 @@ export async function activateInstalledGoogleFont(
 			await pending;
 		})
 	);
+}
+
+/**
+ * Stops serving faces this session loaded for a family, so a font that has just been removed
+ * stops rendering instead of lingering until the next launch.
+ */
+export function deactivateGoogleFontArtifacts(familyName: string, artifactIds: string[]): void {
+	for (const artifactId of artifactIds) {
+		const key = faceKey(familyName, artifactId);
+		const face = sessionFaces.get(key);
+		if (!face) continue;
+		document.fonts.delete(face);
+		sessionFaces.delete(key);
+	}
 }
 
 export function clearSessionFontFaces(): void {

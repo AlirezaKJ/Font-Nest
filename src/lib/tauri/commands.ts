@@ -13,6 +13,7 @@ import type { GoogleFontInstallResult } from '$lib/bindings/GoogleFontInstallRes
 import type { GoogleFontPage } from '$lib/bindings/GoogleFontPage';
 import type { GoogleFontPageRequest } from '$lib/bindings/GoogleFontPageRequest';
 import type { GoogleFontPreview } from '$lib/bindings/GoogleFontPreview';
+import type { GoogleFontUninstallResult } from '$lib/bindings/GoogleFontUninstallResult';
 import type { ManagedStorageStatus } from '$lib/bindings/ManagedStorageStatus';
 import type { ValidatedLocalFont } from '$lib/bindings/ValidatedLocalFont';
 
@@ -93,6 +94,19 @@ export function installGoogleFont(
 	artifactIds: string[]
 ): Promise<GoogleFontInstallResult> {
 	return invoke<GoogleFontInstallResult>('install_google_font', {
+		request: { familyId, artifactIds }
+	});
+}
+
+/**
+ * Removes fonts FontNest installed. Every font is proven against the computer first, so the
+ * result can report which ones were left alone and why.
+ */
+export function uninstallGoogleFont(
+	familyId: string,
+	artifactIds: string[]
+): Promise<GoogleFontUninstallResult> {
+	return invoke<GoogleFontUninstallResult>('uninstall_google_font', {
 		request: { familyId, artifactIds }
 	});
 }

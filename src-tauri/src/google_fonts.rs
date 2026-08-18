@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -9,20 +8,27 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use futures_util::StreamExt;
 use reqwest::Url;
 use serde::Deserialize;
-use sha1::{Digest, Sha1};
 
 use crate::dto::{
-    GoogleFontArtifactSummary, GoogleFontFamilyDetails, GoogleFontFamilySummary,
-    GoogleFontInstallResult, GoogleFontPage as GoogleFontPageDto,
-    GoogleFontPageRequest as GoogleFontPageRequestDto, GoogleFontPreview, InstallGoogleFontRequest,
+    FontRemovalRefusal, GoogleFontArtifactSummary, GoogleFontFamilyDetails,
+    GoogleFontFamilySummary, GoogleFontInstallResult, GoogleFontPage as GoogleFontPageDto,
+    GoogleFontPageRequest as GoogleFontPageRequestDto, GoogleFontPreview,
+    GoogleFontUninstallResult, InstallGoogleFontRequest, RefusedFontRemoval,
+    UninstallGoogleFontRequest,
 };
 use crate::font_platform::{
     FontPlatformError, PlatformInstallation, ValidatedFontMetadata, install_planned_user_font,
     plan_user_font_installation, rollback_user_font, validate_font,
 };
 use crate::managed_installations::{
-    ManagedInstallationRecord, ManagedInstallationRepository, OperationKind, PlannedInstallStep,
+    ManagedInstallationRecord, ManagedInstallationRepository, OperationKind, OperationStep,
 };
+// Artifacts are published as Git blobs, so the digest that verifies a download is the same one
+// that later proves an installed file still holds the bytes it was installed with.
+use crate::managed_ownership::{
+    OwnershipRefusal, ProviderArtifact, SystemEnvironment, content_hash as git_blob_sha,
+};
+use crate::managed_uninstall::{UninstallError, uninstall_family};
 
 const MANIFEST_SCHEMA_VERSION: u32 = 1;
 const MAX_CATALOGUE_PAGE_SIZE: usize = 100;
@@ -355,11 +361,13 @@ async fn journalled_install(
     let steps = downloads
         .iter()
         .zip(&plans)
-        .map(|(download, plan)| PlannedInstallStep {
+        .map(|(download, plan)| OperationStep {
             artifact_id: download.artifact.id.clone(),
             display_name: plan.display_name.clone(),
             installed_path: plan.installed_path.to_string_lossy().into_owned(),
             registry_value_name: plan.registry_value_name.clone(),
+            // An installation has nothing to set aside: undoing it removes what it wrote.
+            quarantine_path: String::new(),
         })
         .collect::<Vec<_>>();
     let journal = repository.clone();
@@ -422,6 +430,107 @@ fn bundled_manifest() -> Result<&'static GoogleFontsManifest, GoogleFontsError> 
         .get_or_init(|| parse_manifest(BUNDLED_MANIFEST))
         .as_ref()
         .map_err(|_| GoogleFontsError::Manifest)
+}
+
+/// Takes back fonts this provider installed.
+///
+/// Nothing here decides what may be removed. Every artifact the ledger claims is proven against
+/// the computer first, and the family name comes from the bundled manifest so the interface can
+/// name what happened even when every artifact was refused.
+///
+/// # Errors
+///
+/// Returns [`GoogleFontsError::InvalidRequest`] for a family this build does not have,
+/// [`GoogleFontsError::Database`] when the ledger cannot be read or written, and
+/// [`GoogleFontsError::Platform`] when a proven font could not be taken out of service.
+pub fn uninstall_fonts(
+    request: &UninstallGoogleFontRequest,
+    app_data_dir: &Path,
+) -> Result<GoogleFontUninstallResult, GoogleFontsError> {
+    if !is_safe_id(&request.family_id)
+        || request.artifact_ids.len() > MAX_INSTALL_ARTIFACTS
+        || !request.artifact_ids.iter().all(|id| is_safe_id(id))
+    {
+        return Err(GoogleFontsError::InvalidRequest);
+    }
+    let family = bundled_manifest()?
+        .families
+        .iter()
+        .find(|family| family.id == request.family_id)
+        .ok_or(GoogleFontsError::InvalidRequest)?;
+
+    let outcome = uninstall_family(
+        &installation_repository(app_data_dir),
+        app_data_dir,
+        PROVIDER_ID,
+        &family.id,
+        &request.artifact_ids,
+        &SystemEnvironment,
+    )
+    .map_err(|error| match error {
+        // The quarantine directory lives beside the ledger, so failing to write there is the same
+        // kind of trouble: the storage FontNest keeps its own records in is unavailable.
+        UninstallError::Ledger | UninstallError::Quarantine => GoogleFontsError::Database,
+        UninstallError::Platform | UninstallError::Changed => GoogleFontsError::Platform,
+    })?;
+
+    Ok(GoogleFontUninstallResult {
+        family_id: family.id.clone(),
+        family_name: family.family.clone(),
+        removed_artifact_ids: outcome
+            .removed
+            .into_iter()
+            .map(|font| font.artifact_id)
+            .collect(),
+        refused: outcome
+            .refused
+            .into_iter()
+            .map(|font| RefusedFontRemoval {
+                artifact_id: font.artifact_id,
+                display_name: font.display_name,
+                reason: refusal_summary(font.reason),
+            })
+            .collect(),
+    })
+}
+
+/// Says why a font was left alone in the interface's own terms, without leaking the paths and
+/// registry names the checks were made against.
+const fn refusal_summary(refusal: OwnershipRefusal) -> FontRemovalRefusal {
+    match refusal {
+        OwnershipRefusal::UnknownProvider => FontRemovalRefusal::UnknownSource,
+        OwnershipRefusal::FontDirectoryUnavailable => FontRemovalRefusal::LocationUnavailable,
+        OwnershipRefusal::LedgerPathMismatch => FontRemovalRefusal::RecordMismatch,
+        OwnershipRefusal::Missing => FontRemovalRefusal::Missing,
+        OwnershipRefusal::Redirected => FontRemovalRefusal::Redirected,
+        OwnershipRefusal::OutsideManagedRoot => FontRemovalRefusal::OutsideFontFolder,
+        OwnershipRefusal::ContentMismatch => FontRemovalRefusal::Changed,
+        OwnershipRefusal::RegistryMismatch => FontRemovalRefusal::NotRegistered,
+        OwnershipRefusal::Protected => FontRemovalRefusal::Protected,
+        OwnershipRefusal::Unreadable => FontRemovalRefusal::Unreadable,
+    }
+}
+
+/// What the bundled manifest says one artifact is.
+///
+/// This is the answer uninstall authorization starts from, which is why it reads from the manifest
+/// compiled into the binary rather than from anything the ledger recorded at install time.
+#[must_use]
+pub fn manifest_artifact(provider: &str, artifact_id: &str) -> Option<ProviderArtifact> {
+    if provider != PROVIDER_ID {
+        return None;
+    }
+    bundled_manifest()
+        .ok()?
+        .families
+        .iter()
+        .flat_map(|family| &family.artifacts)
+        .find(|artifact| artifact.id == artifact_id)
+        .map(|artifact| ProviderArtifact {
+            file_name: artifact.file_name.clone(),
+            content_hash: artifact.git_blob_sha.clone(),
+            size_bytes: artifact.size_bytes,
+        })
 }
 
 fn installation_repository(app_data_dir: &Path) -> ManagedInstallationRepository {
@@ -973,19 +1082,6 @@ fn selected_artifacts(
                 .ok_or_else(|| "invalid_artifact_selection".to_owned())
         })
         .collect()
-}
-
-fn git_blob_sha(bytes: &[u8]) -> String {
-    let mut hasher = Sha1::new();
-    hasher.update(format!("blob {}\0", bytes.len()).as_bytes());
-    hasher.update(bytes);
-    hasher
-        .finalize()
-        .iter()
-        .fold(String::with_capacity(40), |mut output, byte| {
-            write!(&mut output, "{byte:02x}").expect("writing to a String cannot fail");
-            output
-        })
 }
 
 fn is_hex_sha(value: &str) -> bool {

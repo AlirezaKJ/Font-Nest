@@ -9,8 +9,10 @@ mod font_variations;
 mod google_fonts;
 mod local_fonts;
 mod managed_installations;
+mod managed_ownership;
 mod managed_recovery;
 mod managed_storage;
+mod managed_uninstall;
 mod release_notes;
 
 /// Starts the `FontNest` desktop application.
@@ -120,6 +122,7 @@ pub fn run() {
             commands::get_google_font_details,
             commands::prepare_google_font_preview,
             commands::install_google_font,
+            commands::uninstall_google_font,
             commands::managed_storage_status,
             commands::fetch_remote_changelog,
             commands::check_for_app_update,

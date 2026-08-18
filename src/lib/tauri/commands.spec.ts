@@ -9,6 +9,7 @@ import {
 	inspectFontFace,
 	inspectFontGlyphOutline,
 	installGoogleFont,
+	uninstallGoogleFont,
 	installAppUpdate,
 	listGoogleFonts,
 	managedStorageStatus,
@@ -171,6 +172,30 @@ describe('Google Fonts commands', () => {
 			request: {
 				familyId: 'gf:inter',
 				artifactIds: ['gf:inter:regular']
+			}
+		});
+	});
+
+	it('removes a whole family by naming no artifacts, and reports what it kept', async () => {
+		const response = {
+			familyId: 'gf:inter',
+			familyName: 'Inter',
+			removedArtifactIds: ['gf:inter:regular'],
+			refused: [
+				{
+					artifactId: 'gf:inter:bold',
+					displayName: 'Inter Bold',
+					reason: 'changed'
+				}
+			]
+		};
+		vi.mocked(invoke).mockResolvedValue(response);
+
+		await expect(uninstallGoogleFont('gf:inter', [])).resolves.toEqual(response);
+		expect(invoke).toHaveBeenCalledWith('uninstall_google_font', {
+			request: {
+				familyId: 'gf:inter',
+				artifactIds: []
 			}
 		});
 	});

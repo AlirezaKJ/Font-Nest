@@ -374,6 +374,67 @@ pub struct GoogleFontInstallResult {
     pub already_installed_artifact_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct UninstallGoogleFontRequest {
+    pub family_id: String,
+    /// The artifacts to remove. An empty list means every artifact of the family that `FontNest`
+    /// installed.
+    pub artifact_ids: Vec<String>,
+}
+
+/// Why `FontNest` would not remove a font it has a record of installing.
+///
+/// Each value names the check that stopped, because a font somebody replaced and a ledger somebody
+/// edited need different things said about them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub enum FontRemovalRefusal {
+    /// The font came from a source this version of `FontNest` no longer knows.
+    UnknownSource,
+    /// The per-user font folder could not be located.
+    LocationUnavailable,
+    /// The record disagrees with where the font would have been installed.
+    RecordMismatch,
+    /// The font is no longer where it was installed.
+    Missing,
+    /// The path leads somewhere else now, through a link or a second name for the file.
+    Redirected,
+    /// The file resolved outside the per-user font folder.
+    OutsideFontFolder,
+    /// The file no longer holds the bytes that were installed.
+    Changed,
+    /// The font registration no longer points at this file.
+    NotRegistered,
+    /// The font is protected by the operating system.
+    Protected,
+    /// The font file could not be read.
+    Unreadable,
+}
+
+/// One font a removal left alone, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct RefusedFontRemoval {
+    pub artifact_id: String,
+    pub display_name: String,
+    pub reason: FontRemovalRefusal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct GoogleFontUninstallResult {
+    pub family_id: String,
+    pub family_name: String,
+    pub removed_artifact_ids: Vec<String>,
+    /// Fonts `FontNest` would not remove. They are still installed and still registered.
+    pub refused: Vec<RefusedFontRemoval>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/bindings/")]
@@ -591,6 +652,13 @@ impl CommandError {
         Self {
             code: "font_install_failed",
             message: "Windows could not install that font for the current user.",
+        }
+    }
+
+    pub const fn font_uninstall_failed() -> Self {
+        Self {
+            code: "font_uninstall_failed",
+            message: "FontNest could not finish removing that font. Nothing was deleted.",
         }
     }
 

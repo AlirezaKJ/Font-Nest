@@ -16,8 +16,10 @@ use std::path::PathBuf;
 
 use crate::font_platform::{FontPlatformError, PlatformInstallation, rollback_user_font};
 use crate::managed_installations::{
-    InterruptedOperation, ManagedInstallationRepository, PlannedInstallStep,
+    InterruptedOperation, ManagedInstallationRepository, OperationKind, OperationStep,
 };
+use crate::managed_ownership::SystemEnvironment;
+use crate::managed_uninstall::restore_uninstalled_font;
 
 /// How many launches may try to undo the same operation before `FontNest` stops retrying it. An
 /// operation that fails this often is not going to succeed on the next launch either, and retrying
@@ -43,18 +45,21 @@ pub struct RecoveryReport {
 pub fn recover_interrupted_operations(
     repository: &ManagedInstallationRepository,
 ) -> RecoveryReport {
-    recover_with(repository, |step| {
-        rollback_user_font(&PlatformInstallation {
+    recover_with(repository, |kind, step| match kind {
+        OperationKind::Install => rollback_user_font(&PlatformInstallation {
             installed_path: PathBuf::from(&step.installed_path),
             registry_value_name: step.registry_value_name.clone(),
             display_name: step.display_name.clone(),
-        })
+        }),
+        // An uninstall that never committed still has the font recorded as installed, so putting
+        // it back is what agrees with the ledger.
+        OperationKind::Uninstall => restore_uninstalled_font(&SystemEnvironment, step),
     })
 }
 
 fn recover_with<U>(repository: &ManagedInstallationRepository, undo: U) -> RecoveryReport
 where
-    U: Fn(&PlannedInstallStep) -> Result<(), FontPlatformError>,
+    U: Fn(OperationKind, &OperationStep) -> Result<(), FontPlatformError>,
 {
     let operations = match repository.interrupted_operations() {
         Ok(operations) => operations,
@@ -97,32 +102,40 @@ fn undo_operation<U>(
     undo: &U,
 ) -> bool
 where
-    U: Fn(&PlannedInstallStep) -> Result<(), FontPlatformError>,
+    U: Fn(OperationKind, &OperationStep) -> Result<(), FontPlatformError>,
 {
     for step in &operation.steps {
-        match repository.is_recorded_installation(&step.installed_path) {
-            // The ledger already proves this font was installed and accounted for, so the intent
-            // record is stale rather than describing something to take away. Leaving the file is
-            // the whole point of asking: a stale entry must never delete an owned font.
-            Ok(true) => {
-                log::warn!(
-                    "An interrupted operation named an installed font, so it was left in place: {}",
-                    step.artifact_id
-                );
-            }
-            Ok(false) => {
-                if let Err(error) = undo(step) {
-                    log::error!(
-                        "An interrupted installation of {artifact} could not be undone: {error}",
-                        artifact = step.artifact_id,
+        // Only an installation has to ask. An uninstall that did not commit left the row in place
+        // deliberately, and that row is the reason to put the font back rather than a reason to
+        // leave it alone.
+        if operation.kind == OperationKind::Install {
+            match repository.is_recorded_installation(&step.installed_path) {
+                // The ledger already proves this font was installed and accounted for, so the
+                // intent record is stale rather than describing something to take away. Leaving
+                // the file is the whole point of asking: a stale entry must never delete an owned
+                // font.
+                Ok(true) => {
+                    log::warn!(
+                        "An interrupted operation named an installed font, so it was left in place: {}",
+                        step.artifact_id
                     );
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    log::error!("The managed-installation ledger could not be read: {error}");
                     return false;
                 }
             }
-            Err(error) => {
-                log::error!("The managed-installation ledger could not be read: {error}");
-                return false;
-            }
+        }
+
+        if let Err(error) = undo(operation.kind, step) {
+            log::error!(
+                "An interrupted {kind:?} of {artifact} could not be undone: {error}",
+                kind = operation.kind,
+                artifact = step.artifact_id,
+            );
+            return false;
         }
     }
 
@@ -161,18 +174,19 @@ mod tests {
     use super::{MAX_RECOVERY_ATTEMPTS, RecoveryReport, recover_with};
     use crate::font_platform::FontPlatformError;
     use crate::managed_installations::{
-        ManagedInstallationRecord, ManagedInstallationRepository, OperationKind, PlannedInstallStep,
+        ManagedInstallationRecord, ManagedInstallationRepository, OperationKind, OperationStep,
     };
 
     const OPERATION: &str = "google-fonts:gf:inter:1723996800000000000:4242";
     const INSTALLED_PATH: &str = "C:\\Fonts\\FontNest-30d74d258442-Inter-Regular.ttf";
 
-    fn step() -> PlannedInstallStep {
-        PlannedInstallStep {
+    fn step() -> OperationStep {
+        OperationStep {
             artifact_id: "gf:inter:regular".to_owned(),
             display_name: "Inter Regular".to_owned(),
             installed_path: INSTALLED_PATH.to_owned(),
             registry_value_name: "Inter Regular (TrueType)".to_owned(),
+            quarantine_path: String::new(),
         }
     }
 
@@ -210,7 +224,7 @@ mod tests {
         let repository = interrupted(temp.path());
         let undone = RefCell::new(Vec::new());
 
-        let report = recover_with(&repository, |step| {
+        let report = recover_with(&repository, |_, step| {
             undone.borrow_mut().push(step.installed_path.clone());
             Ok(())
         });
@@ -242,7 +256,7 @@ mod tests {
             .commit_operation("google-fonts:earlier", &[record()])
             .expect("the ledger write");
 
-        let report = recover_with(&repository, |_| {
+        let report = recover_with(&repository, |_, _| {
             panic!("an installed font must not be rolled back")
         });
 
@@ -259,7 +273,7 @@ mod tests {
     fn an_operation_that_cannot_be_undone_is_retried_then_quarantined() {
         let temp = tempfile::tempdir().expect("a temporary directory");
         let repository = interrupted(temp.path());
-        let refuse = |_: &PlannedInstallStep| Err(FontPlatformError::TargetConflict);
+        let refuse = |_: OperationKind, _: &OperationStep| Err(FontPlatformError::TargetConflict);
 
         for attempt in 1..MAX_RECOVERY_ATTEMPTS {
             let report = recover_with(&repository, refuse);
@@ -306,7 +320,7 @@ mod tests {
         let repository = ManagedInstallationRepository::in_app_data_dir(temp.path());
         repository.initialize().expect("the first migration");
 
-        let report = recover_with(&repository, |_| panic!("there is nothing to undo"));
+        let report = recover_with(&repository, |_, _| panic!("there is nothing to undo"));
 
         assert_eq!(report, RecoveryReport::default());
     }

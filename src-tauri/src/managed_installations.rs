@@ -10,7 +10,7 @@ use crate::font_identity::IdentityKey;
 pub const LEDGER_FILE_NAME: &str = "fontnest.sqlite3";
 
 /// Highest schema version this build understands. It must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The journal state of an operation that may still be undone at the next launch.
 const OPERATION_OPEN: &str = "open";
@@ -95,6 +95,9 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX idx_font_identities_kind_seen ON font_identities(kind, last_seen_at);
 ",
+    "
+    ALTER TABLE managed_operation_steps ADD COLUMN quarantine_path TEXT NOT NULL DEFAULT '';
+",
 ];
 
 /// Why the ledger could not be brought up to the schema this build expects.
@@ -130,37 +133,46 @@ pub struct ManagedInstallationRecord {
     pub operation_id: String,
 }
 
-/// What an interrupted operation was in the middle of doing. Only installation exists today;
-/// update, uninstall, and repair join it when those operations land.
+/// What an interrupted operation was in the middle of doing. Update and repair join these when
+/// those operations land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationKind {
     Install,
+    Uninstall,
 }
 
 impl OperationKind {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Install => "install",
+            Self::Uninstall => "uninstall",
         }
     }
 
     fn parse(value: &str) -> Option<Self> {
         match value {
             "install" => Some(Self::Install),
+            "uninstall" => Some(Self::Uninstall),
             _ => None,
         }
     }
 }
 
-/// One font an operation intends to place on this computer. Every field is resolved before the
+/// One font an operation intends to move on this computer. Every field is resolved before the
 /// filesystem or the registry is touched and written to the journal first, so an interrupted run
 /// can be undone from the record alone rather than from a guess about how far it got.
+///
+/// An installation reads this as where a font is about to be put; an uninstall reads it as where a
+/// font is about to be taken from, and where it is being kept in case that turns out to be wrong.
 #[derive(Debug, Clone)]
-pub struct PlannedInstallStep {
+pub struct OperationStep {
     pub artifact_id: String,
     pub display_name: String,
     pub installed_path: String,
     pub registry_value_name: String,
+    /// Where an uninstall is setting the font aside. Empty for an installation, which has nothing
+    /// to set aside.
+    pub quarantine_path: String,
 }
 
 /// An operation the journal still holds open: whatever started it neither committed nor discarded
@@ -171,7 +183,7 @@ pub struct InterruptedOperation {
     pub kind: OperationKind,
     pub provider: String,
     pub attempts: i64,
-    pub steps: Vec<PlannedInstallStep>,
+    pub steps: Vec<OperationStep>,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +262,77 @@ impl ManagedInstallationRepository {
         rows.collect()
     }
 
+    /// Every installation a provider recorded for one family, oldest row order first.
+    ///
+    /// These rows are claims rather than proof. Uninstall reads them to know which artifacts to
+    /// ask about and then verifies each one against the computer before anything is removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the ledger cannot be read.
+    pub fn installations(
+        &self,
+        provider: &str,
+        family_id: &str,
+    ) -> Result<Vec<ManagedInstallationRecord>, rusqlite::Error> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT id, provider, family_id, artifact_id, family_name, display_name,
+                    source_commit, source_hash, installed_path, registry_value_name,
+                    license, license_path, operation_id
+             FROM managed_installations
+             WHERE provider = ?1 AND family_id = ?2
+             ORDER BY artifact_id",
+        )?;
+        let rows = statement.query_map(params![provider, family_id], |row| {
+            Ok(ManagedInstallationRecord {
+                id: row.get(0)?,
+                provider: row.get(1)?,
+                family_id: row.get(2)?,
+                artifact_id: row.get(3)?,
+                family_name: row.get(4)?,
+                display_name: row.get(5)?,
+                source_commit: row.get(6)?,
+                source_hash: row.get(7)?,
+                installed_path: row.get(8)?,
+                registry_value_name: row.get(9)?,
+                license: row.get(10)?,
+                license_path: row.get(11)?,
+                operation_id: row.get(12)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Forgets the installations an uninstall took back and closes its journal entry in the same
+    /// transaction.
+    ///
+    /// The two belong together for the same reason they do on the way in: while the entry is open
+    /// the ledger still claims the font, and recovery can put it back. Once the rows are gone the
+    /// claim is gone, so both facts have to change at the same moment or neither does.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the ledger cannot be written. The journal entry stays open,
+    /// so the next launch restores what the uninstall had already taken away.
+    pub fn commit_uninstall(
+        &self,
+        id: &str,
+        installation_ids: &[String],
+    ) -> Result<(), rusqlite::Error> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        {
+            let mut statement =
+                transaction.prepare("DELETE FROM managed_installations WHERE id = ?1")?;
+            for installation_id in installation_ids {
+                statement.execute(params![installation_id])?;
+            }
+        }
+        transaction.execute("DELETE FROM managed_operations WHERE id = ?1", params![id])?;
+        transaction.commit()
+    }
+
     /// Writes down everything an operation is about to do, before it does any of it.
     ///
     /// The rows this commits are the only reason an interrupted run can be cleaned up: the paths
@@ -265,7 +348,7 @@ impl ManagedInstallationRepository {
         id: &str,
         kind: OperationKind,
         provider: &str,
-        steps: &[PlannedInstallStep],
+        steps: &[OperationStep],
     ) -> Result<(), rusqlite::Error> {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
@@ -281,8 +364,8 @@ impl ManagedInstallationRepository {
             let mut statement = transaction.prepare(
                 "INSERT INTO managed_operation_steps (
                     operation_id, ordinal, artifact_id, display_name,
-                    installed_path, registry_value_name
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    installed_path, registry_value_name, quarantine_path
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             for (ordinal, step) in (0_i64..).zip(steps) {
                 statement.execute(params![
@@ -292,6 +375,7 @@ impl ManagedInstallationRepository {
                     step.display_name,
                     step.installed_path,
                     step.registry_value_name,
+                    step.quarantine_path,
                 ])?;
             }
         }
@@ -375,18 +459,19 @@ impl ManagedInstallationRepository {
         }
 
         let mut statement = connection.prepare(
-            "SELECT artifact_id, display_name, installed_path, registry_value_name
+            "SELECT artifact_id, display_name, installed_path, registry_value_name, quarantine_path
              FROM managed_operation_steps
              WHERE operation_id = ?1
              ORDER BY ordinal",
         )?;
         for operation in &mut operations {
             let rows = statement.query_map(params![operation.id], |row| {
-                Ok(PlannedInstallStep {
+                Ok(OperationStep {
                     artifact_id: row.get(0)?,
                     display_name: row.get(1)?,
                     installed_path: row.get(2)?,
                     registry_value_name: row.get(3)?,
+                    quarantine_path: row.get(4)?,
                 })
             })?;
             operation.steps = rows.collect::<Result<Vec<_>, _>>()?;
@@ -610,7 +695,7 @@ fn schema_version(connection: &Connection) -> Result<i64, rusqlite::Error> {
 mod tests {
     use super::{
         InterruptedOperation, LedgerError, MIGRATIONS, ManagedInstallationRecord,
-        ManagedInstallationRepository, OperationKind, PlannedInstallStep, SCHEMA_VERSION,
+        ManagedInstallationRepository, OperationKind, OperationStep, SCHEMA_VERSION,
         schema_version,
     };
     use crate::font_identity::{FileIdentity, face_identity_key, family_identity_key};
@@ -639,13 +724,14 @@ mod tests {
         }
     }
 
-    fn sample_step() -> PlannedInstallStep {
+    fn sample_step() -> OperationStep {
         let record = sample_record();
-        PlannedInstallStep {
+        OperationStep {
             artifact_id: record.artifact_id,
             display_name: record.display_name,
             installed_path: record.installed_path,
             registry_value_name: record.registry_value_name,
+            quarantine_path: String::new(),
         }
     }
 

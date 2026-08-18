@@ -89,10 +89,39 @@ impl FileIdentityCache {
     }
 }
 
+/// What one open file says about itself: which file the filesystem thinks it is, and how many
+/// names point at it.
+///
+/// The link count matters only where a decision is about to be made about a specific file. A
+/// managed font is written once and never linked, so a second name for it is somebody else's
+/// doing and a reason to stop rather than to carry on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRecord {
+    pub identity: FileIdentity,
+    /// Names pointing at this file, or `None` when the platform does not report it.
+    pub links: Option<u64>,
+}
+
 /// Reads the filesystem's own record for a file, falling back to its path when there is none.
 #[must_use]
 pub fn file_identity(path: &Path) -> FileIdentity {
-    platform_file_identity(path).unwrap_or_else(|| FileIdentity::Path(path.to_owned()))
+    std::fs::File::open(path)
+        .ok()
+        .and_then(|file| file_record(&file))
+        .map_or_else(
+            || FileIdentity::Path(path.to_owned()),
+            |record| record.identity,
+        )
+}
+
+/// Reads the filesystem's record for an already-open file.
+///
+/// Taking it from the handle rather than from the path is what lets a caller prove that the bytes
+/// it just read and the file it is about to act on are the same file. A path can be pointed
+/// somewhere else between two opens; a handle cannot.
+#[must_use]
+pub fn file_record(file: &std::fs::File) -> Option<FileRecord> {
+    platform_file_record(file)
 }
 
 /// Windows keeps a volume serial number and a 64-bit file index per open handle. Both survive a
@@ -102,8 +131,7 @@ pub fn file_identity(path: &Path) -> FileIdentity {
 /// redirectors answer with zeros), fall through to the path so the face still gets an ID.
 #[cfg(windows)]
 #[allow(unsafe_code)] // Reading a file's identifier requires the Win32 call; nothing else offers it.
-fn platform_file_identity(path: &Path) -> Option<FileIdentity> {
-    use std::fs::File;
+fn platform_file_record(file: &std::fs::File) -> Option<FileRecord> {
     use std::mem::MaybeUninit;
     use std::os::windows::io::AsRawHandle;
 
@@ -111,7 +139,6 @@ fn platform_file_identity(path: &Path) -> Option<FileIdentity> {
         BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
     };
 
-    let file = File::open(path).ok()?;
     let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
 
     // SAFETY: the handle is owned by `file` and stays open across the call, and the out pointer
@@ -131,23 +158,29 @@ fn platform_file_identity(path: &Path) -> Option<FileIdentity> {
     if volume == 0 && index == 0 {
         return None;
     }
-    Some(FileIdentity::Platform { volume, index })
+    Some(FileRecord {
+        identity: FileIdentity::Platform { volume, index },
+        links: Some(u64::from(information.nNumberOfLinks)),
+    })
 }
 
 /// The device and inode pair, which is the same guarantee Windows gives through its file index.
 #[cfg(unix)]
-fn platform_file_identity(path: &Path) -> Option<FileIdentity> {
+fn platform_file_record(file: &std::fs::File) -> Option<FileRecord> {
     use std::os::unix::fs::MetadataExt;
 
-    let metadata = std::fs::metadata(path).ok()?;
-    Some(FileIdentity::Platform {
-        volume: metadata.dev(),
-        index: metadata.ino(),
+    let metadata = file.metadata().ok()?;
+    Some(FileRecord {
+        identity: FileIdentity::Platform {
+            volume: metadata.dev(),
+            index: metadata.ino(),
+        },
+        links: Some(metadata.nlink()),
     })
 }
 
 #[cfg(not(any(windows, unix)))]
-fn platform_file_identity(_path: &Path) -> Option<FileIdentity> {
+fn platform_file_record(_file: &std::fs::File) -> Option<FileRecord> {
     None
 }
 
