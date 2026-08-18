@@ -269,10 +269,176 @@ fn generate_handle() -> String {
         })
 }
 
+/// Largest standalone face rebuilt out of a collection.
+const MAX_EXTRACTED_FACE_BYTES: usize = 64 * 1024 * 1024;
+/// Most tables accepted in one face's table directory.
+const MAX_TABLE_RECORDS: usize = 512;
+/// Magic the checksum of a whole SFNT file must add up to.
+const CHECKSUM_MAGIC: u32 = 0xB1B0_AFBA;
+
+/// Returns one face of a font file as a standalone SFNT.
+///
+/// A `FontFace` in the web view cannot name a face inside a collection: it always loads
+/// face zero. Previewing face three of a `.ttc` therefore means rebuilding that face as
+/// its own font, carrying only its own table directory, before the bytes leave the
+/// backend. Files that already hold a single face are returned unchanged.
+///
+/// The rebuild copies table bytes verbatim, so every per-table checksum still holds; only
+/// the file-wide `checkSumAdjustment` in `head` is recomputed. A `DSIG` signature covers
+/// the original layout and cannot survive the rebuild, so it is dropped rather than
+/// carried forward as a signature that no longer verifies.
+pub fn extract_face_sfnt(bytes: &[u8], face_index: u32) -> Result<Vec<u8>, LocalFontError> {
+    let Some(face_count) = ttf_parser::fonts_in_collection(bytes) else {
+        // Not a collection: the file is the face, and any index but zero is a lie.
+        if face_index != 0 {
+            return Err(LocalFontError::InvalidFont);
+        }
+        return Ok(bytes.to_vec());
+    };
+    if face_index >= face_count {
+        return Err(LocalFontError::InvalidFont);
+    }
+
+    let sfnt_version = collection_face_sfnt_version(bytes, face_index)?;
+    let raw =
+        ttf_parser::RawFace::parse(bytes, face_index).map_err(|_| LocalFontError::InvalidFont)?;
+
+    let dsig = ttf_parser::Tag::from_bytes(b"DSIG");
+    let mut tables: Vec<(ttf_parser::Tag, u32, &[u8])> = Vec::new();
+    for record in raw.table_records {
+        if record.tag == dsig {
+            continue;
+        }
+        let start = usize::try_from(record.offset).map_err(|_| LocalFontError::InvalidFont)?;
+        let length = usize::try_from(record.length).map_err(|_| LocalFontError::InvalidFont)?;
+        let end = start
+            .checked_add(length)
+            .ok_or(LocalFontError::InvalidFont)?;
+        let data = bytes.get(start..end).ok_or(LocalFontError::InvalidFont)?;
+        if tables.iter().any(|(tag, _, _)| *tag == record.tag) {
+            continue;
+        }
+        tables.push((record.tag, record.check_sum, data));
+        if tables.len() > MAX_TABLE_RECORDS {
+            return Err(LocalFontError::InvalidFont);
+        }
+    }
+    if tables.is_empty() {
+        return Err(LocalFontError::InvalidFont);
+    }
+    // A table directory is required to be sorted by tag, and `RawFace::table` binary
+    // searches it, so the rebuilt directory has to keep that order.
+    tables.sort_by_key(|(tag, _, _)| tag.0);
+
+    let table_count = u16::try_from(tables.len()).map_err(|_| LocalFontError::InvalidFont)?;
+    let directory_length = 12 + tables.len() * 16;
+    let total_length = tables
+        .iter()
+        .try_fold(directory_length, |total, (_, _, data)| {
+            total
+                .checked_add(padded_length(data.len()))
+                .filter(|length| *length <= MAX_EXTRACTED_FACE_BYTES)
+                .ok_or(LocalFontError::TooLarge)
+        })?;
+
+    // The offset table repeats the binary-search hints every SFNT header carries.
+    let entry_selector =
+        u16::try_from(table_count.ilog2()).map_err(|_| LocalFontError::InvalidFont)?;
+    let search_range = 16 * (1_u16 << entry_selector);
+    let range_shift = table_count * 16 - search_range;
+
+    let mut out = Vec::with_capacity(total_length);
+    out.extend_from_slice(&sfnt_version.to_be_bytes());
+    out.extend_from_slice(&table_count.to_be_bytes());
+    out.extend_from_slice(&search_range.to_be_bytes());
+    out.extend_from_slice(&entry_selector.to_be_bytes());
+    out.extend_from_slice(&range_shift.to_be_bytes());
+
+    let mut offset = u32::try_from(directory_length).map_err(|_| LocalFontError::InvalidFont)?;
+    let mut head_offset: Option<usize> = None;
+    for (tag, check_sum, data) in &tables {
+        if *tag == ttf_parser::Tag::from_bytes(b"head") {
+            head_offset = usize::try_from(offset).ok();
+        }
+        out.extend_from_slice(&tag.0.to_be_bytes());
+        out.extend_from_slice(&check_sum.to_be_bytes());
+        out.extend_from_slice(&offset.to_be_bytes());
+        out.extend_from_slice(
+            &u32::try_from(data.len())
+                .map_err(|_| LocalFontError::InvalidFont)?
+                .to_be_bytes(),
+        );
+        offset = offset
+            .checked_add(
+                u32::try_from(padded_length(data.len()))
+                    .map_err(|_| LocalFontError::InvalidFont)?,
+            )
+            .ok_or(LocalFontError::TooLarge)?;
+    }
+
+    for (_, _, data) in &tables {
+        out.extend_from_slice(data);
+        out.resize(padded_length(out.len()), 0);
+    }
+
+    // `head.checkSumAdjustment` describes the whole file, so the copied value belongs to
+    // the collection rather than to this rebuilt font. Zero it, checksum the file, and
+    // write the value that makes the file sum to the magic constant.
+    if let Some(head) = head_offset {
+        let field = head.checked_add(8).ok_or(LocalFontError::InvalidFont)?;
+        let slot = out
+            .get_mut(field..field + 4)
+            .ok_or(LocalFontError::InvalidFont)?;
+        slot.copy_from_slice(&[0, 0, 0, 0]);
+        let adjustment = CHECKSUM_MAGIC.wrapping_sub(sfnt_checksum(&out));
+        out[field..field + 4].copy_from_slice(&adjustment.to_be_bytes());
+    }
+
+    Ok(out)
+}
+
+/// Reads the `sfntVersion` of one face out of a collection's header.
+///
+/// Deriving it from the tables present would guess; the face's own table directory states
+/// it, so it is read from there.
+fn collection_face_sfnt_version(bytes: &[u8], face_index: u32) -> Result<u32, LocalFontError> {
+    let entry = usize::try_from(face_index)
+        .ok()
+        .and_then(|index| index.checked_mul(4))
+        .and_then(|offset| offset.checked_add(12))
+        .ok_or(LocalFontError::InvalidFont)?;
+    let offset = bytes
+        .get(entry..entry + 4)
+        .and_then(|slice| slice.try_into().ok())
+        .map(u32::from_be_bytes)
+        .ok_or(LocalFontError::InvalidFont)?;
+    let start = usize::try_from(offset).map_err(|_| LocalFontError::InvalidFont)?;
+    bytes
+        .get(start..start + 4)
+        .and_then(|slice| slice.try_into().ok())
+        .map(u32::from_be_bytes)
+        .ok_or(LocalFontError::InvalidFont)
+}
+
+/// Rounds a length up to the four-byte boundary every SFNT table starts on.
+const fn padded_length(length: usize) -> usize {
+    length.div_ceil(4) * 4
+}
+
+/// Sums a whole SFNT file as big-endian `u32` words, padding a short tail with zeroes.
+fn sfnt_checksum(bytes: &[u8]) -> u32 {
+    bytes.chunks(4).fold(0_u32, |sum, chunk| {
+        let mut word = [0_u8; 4];
+        word[..chunk.len()].copy_from_slice(chunk);
+        sum.wrapping_add(u32::from_be_bytes(word))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        LocalFontError, MAX_PREVIEW_ENTRIES, PreviewStore, is_valid_handle, validate_and_register,
+        LocalFontError, MAX_PREVIEW_ENTRIES, PreviewStore, extract_face_sfnt, is_valid_handle,
+        unicode_name, validate_and_register,
     };
 
     #[test]
@@ -322,6 +488,109 @@ mod tests {
         );
         let inner = store.inner.lock().expect("registry lock");
         assert_eq!(inner.entries.len(), MAX_PREVIEW_ENTRIES);
+    }
+
+    #[test]
+    fn passes_single_face_files_through_unchanged() {
+        let bytes = vec![0_u8, 1, 0, 0, 7, 7, 7];
+        let extracted = extract_face_sfnt(&bytes, 0).expect("a single-face file needs no rebuild");
+        assert_eq!(extracted, bytes);
+    }
+
+    #[test]
+    fn rejects_a_face_index_a_single_face_file_does_not_have() {
+        let bytes = vec![0_u8, 1, 0, 0, 7, 7, 7];
+        let error = extract_face_sfnt(&bytes, 1).expect_err("face one does not exist");
+        assert!(matches!(error, LocalFontError::InvalidFont));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn rebuilds_each_collection_face_as_its_own_font() {
+        let path = r"C:\Windows\Fonts\cambria.ttc";
+        let Ok(bytes) = std::fs::read(path) else {
+            return; // The collection is not installed on this machine.
+        };
+        let face_count =
+            ttf_parser::fonts_in_collection(&bytes).expect("cambria.ttc is a collection");
+        assert!(face_count > 1, "the fixture must hold more than one face");
+
+        for index in 0..face_count {
+            let extracted = extract_face_sfnt(&bytes, index).expect("every face extracts");
+            assert!(
+                ttf_parser::fonts_in_collection(&extracted).is_none(),
+                "an extracted face is a standalone font, not a collection"
+            );
+
+            // Face zero of the rebuilt font must be the face that was asked for, which is
+            // the whole point: a `FontFace` in the web view can only ever load face zero.
+            let rebuilt = ttf_parser::Face::parse(&extracted, 0).expect("the rebuild parses");
+            let original = ttf_parser::Face::parse(&bytes, index).expect("the original parses");
+            assert_eq!(rebuilt.number_of_glyphs(), original.number_of_glyphs());
+            assert_eq!(
+                unicode_name(&rebuilt, ttf_parser::name_id::POST_SCRIPT_NAME),
+                unicode_name(&original, ttf_parser::name_id::POST_SCRIPT_NAME)
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn an_extracted_face_keeps_the_exact_character_coverage_of_the_original() {
+        let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\cambria.ttc") else {
+            return;
+        };
+        let face_count =
+            ttf_parser::fonts_in_collection(&bytes).expect("cambria.ttc is a collection");
+
+        for index in 0..face_count {
+            let extracted = extract_face_sfnt(&bytes, index).expect("every face extracts");
+            let rebuilt = ttf_parser::Face::parse(&extracted, 0).expect("the rebuild parses");
+            let original = ttf_parser::Face::parse(&bytes, index).expect("the original parses");
+
+            // Coverage is the whole point of the rebuild: what the character grid draws has
+            // to be the same set of characters the inspector lists for this face.
+            for codepoint in (0x20_u32..0x2FFF).filter_map(char::from_u32) {
+                assert_eq!(
+                    rebuilt.glyph_index(codepoint).map(|glyph| glyph.0),
+                    original.glyph_index(codepoint).map(|glyph| glyph.0),
+                    "coverage of U+{:04X} changed in face {index}",
+                    codepoint as u32
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn an_extracted_collection_face_validates_and_registers() {
+        let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\cambria.ttc") else {
+            return;
+        };
+        let face_count =
+            ttf_parser::fonts_in_collection(&bytes).expect("cambria.ttc is a collection");
+        let last = face_count - 1;
+        let extracted = extract_face_sfnt(&bytes, last).expect("the last face extracts");
+
+        let store = PreviewStore::default();
+        let validated = validate_and_register(&store, extracted, "cambria.ttc")
+            .expect("an extracted face validates like any other font");
+
+        assert_eq!(validated.face_count, 1, "the preview holds one face only");
+        assert!(store.get(&validated.handle).is_some());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn rejects_a_face_index_past_the_end_of_a_collection() {
+        let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\cambria.ttc") else {
+            return;
+        };
+        let face_count =
+            ttf_parser::fonts_in_collection(&bytes).expect("cambria.ttc is a collection");
+        let error =
+            extract_face_sfnt(&bytes, face_count).expect_err("one past the end is not a face");
+        assert!(matches!(error, LocalFontError::InvalidFont));
     }
 
     #[cfg(target_os = "windows")]

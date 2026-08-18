@@ -12,7 +12,8 @@ class TestFontFace {
 	loaded = false;
 	constructor(
 		readonly family: string,
-		readonly source: string
+		readonly source: string,
+		readonly descriptors: FontFaceDescriptors = {}
 	) {}
 
 	async load(): Promise<TestFontFace> {
@@ -86,6 +87,17 @@ describe('importLocalFontPreview', () => {
 		await activateLocalFontPreview(font);
 
 		expect(add).toHaveBeenCalledTimes(1);
+	});
+
+	it('registers the face under its own weight and posture', async () => {
+		const add = vi.fn();
+		vi.stubGlobal('FontFace', TestFontFace);
+		vi.stubGlobal('document', { fonts: { add, delete: vi.fn() } });
+
+		await activateLocalFontPreview(validatedFont(), { weight: '700', style: 'italic' });
+
+		const face = add.mock.calls[0]?.[0] as TestFontFace;
+		expect(face.descriptors).toEqual({ weight: '700', style: 'italic' });
 	});
 
 	it('loads a family once when two views ask for it at the same time', async () => {

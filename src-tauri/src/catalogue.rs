@@ -408,6 +408,54 @@ mod tests {
 
     use super::{family_id, format_label, opaque_face_id, style_name};
 
+    /// The preview pipeline the `preview_font_face` command runs, minus Tauri: resolve the
+    /// scanned face, read it, lift it out of its collection, and check that what comes back
+    /// is the face that was asked for. A collection is where this used to go wrong, since a
+    /// `FontFace` in the web view always loads face zero of whatever bytes it is given.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn collection_backed_faces_resolve_to_themselves_for_preview() {
+        use crate::local_fonts;
+
+        let scanned = super::scan_installed_fonts();
+        let collection_faces: Vec<_> = scanned
+            .catalogue
+            .families
+            .iter()
+            .flat_map(|family| family.faces.iter())
+            .filter(|face| face.file_name.to_lowercase().ends_with(".ttc"))
+            .take(12)
+            .collect();
+        if collection_faces.is_empty() {
+            return; // No collections installed on this machine.
+        }
+
+        for face in collection_faces {
+            let (source, index) = scanned
+                .store
+                .face_source(&face.id)
+                .expect("a scanned face resolves to its source");
+            let bytes = super::read_face_bytes(&source).expect("the face reads back");
+            let extracted =
+                local_fonts::extract_face_sfnt(bytes.as_slice(), index).expect("the face extracts");
+            let parsed = ttf_parser::Face::parse(&extracted, 0).expect("the rebuild parses");
+            let post_script_name = parsed
+                .names()
+                .into_iter()
+                .filter(|name| {
+                    name.name_id == ttf_parser::name_id::POST_SCRIPT_NAME && name.is_unicode()
+                })
+                .find_map(|name| name.to_string());
+
+            assert_eq!(
+                post_script_name.as_deref(),
+                Some(face.post_script_name.as_str()),
+                "face zero of the preview bytes must be {}",
+                face.post_script_name
+            );
+        }
+    }
+
     #[test]
     fn family_ids_are_normalized_for_selection() {
         assert_eq!(family_id("  Source Serif 4 "), "source serif 4");

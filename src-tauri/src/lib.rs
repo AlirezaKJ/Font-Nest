@@ -113,6 +113,7 @@ pub fn run() {
             commands::font_face_file_path,
             commands::reveal_font_face_file,
             commands::validate_font_file,
+            commands::preview_font_face,
             commands::list_google_fonts,
             commands::get_google_font_details,
             commands::prepare_google_font_preview,

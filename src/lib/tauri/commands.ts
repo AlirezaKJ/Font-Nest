@@ -61,6 +61,16 @@ export function validateFontFile(path: string): Promise<ValidatedLocalFont> {
 	return invoke<ValidatedLocalFont>('validate_font_file', { path });
 }
 
+/**
+ * Registers the exact bytes of one scanned face for preview and resolves to its opaque
+ * handle and synthetic family name. Rust reads the file, lifts the face out of its
+ * collection, and revalidates it, so the web view renders that face rather than whatever
+ * the OS resolves the installed family name to.
+ */
+export function previewFontFace(faceId: string): Promise<ValidatedLocalFont> {
+	return invoke<ValidatedLocalFont>('preview_font_face', { faceId });
+}
+
 export function listGoogleFonts(request: GoogleFontPageRequest): Promise<GoogleFontPage> {
 	return invoke<GoogleFontPage>('list_google_fonts', { request });
 }

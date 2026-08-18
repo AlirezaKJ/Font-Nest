@@ -411,6 +411,52 @@ pub async fn validate_font_file(
     .map_err(|_| CommandError::local_font_unreadable())?
 }
 
+/// Registers the exact bytes of one scanned face for preview and returns its handle.
+///
+/// This is the preview authority for everything in the installed catalogue. The web view
+/// asks by opaque face ID and never sees a path; the face is lifted out of its collection
+/// so the web view cannot quietly render face zero in its place, and the bytes are
+/// revalidated before they are registered. A specimen drawn through the returned family
+/// name is then that face and nothing else: no family-name lookup for the OS to resolve
+/// against a duplicate, and no system fallback standing in for a character the face does
+/// not actually have.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn preview_font_face(
+    face_id: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<ValidatedLocalFont, CommandError> {
+    ensure_trusted_window(&window)?;
+    validate_face_id(&face_id)?;
+    // Clone an owned handle to the shared registry so the read, extract, and parse can run
+    // on a blocking worker without borrowing app state across the await.
+    let store = (*app.state::<local_fonts::PreviewStore>()).clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let (source, face_index) = app.state::<CatalogueState>().face_source(&face_id)?;
+        // Display only. The frontend already shows this name beside the face; it is never
+        // handed back as something to open.
+        let file_name = match &source {
+            Source::File(path) => path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("font")
+                .to_owned(),
+            _ => "font".to_owned(),
+        };
+        let bytes = catalogue::read_face_bytes(&source)
+            .map_err(|error| map_catalogue_inspection_error(&error))?;
+        let face = local_fonts::extract_face_sfnt(bytes.as_slice(), face_index)
+            .map_err(|error| map_local_font_error(&error))?;
+        drop(bytes);
+        local_fonts::validate_and_register(&store, face, &file_name)
+            .map_err(|error| map_local_font_error(&error))
+    })
+    .await
+    .map_err(|_| CommandError::local_font_unreadable())?
+}
+
 #[tauri::command]
 pub async fn list_google_fonts(
     request: GoogleFontPageRequest,

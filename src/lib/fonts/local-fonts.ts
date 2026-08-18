@@ -14,6 +14,14 @@ type Validator = (path: string) => Promise<ValidatedLocalFont>;
 // document once the last one lets go.
 type LoadedPreview = { face: FontFace; holders: number };
 
+/**
+ * How the loaded face should describe itself to CSS. Without these a face registers as
+ * weight 400 upright, so asking for its real weight makes the web view draw a synthetic
+ * bold on top of a font that already has one, and a variable face snaps instead of
+ * interpolating. Pass the face's own weight (or its `wght` range) and posture.
+ */
+export type PreviewFontDescriptors = { weight?: string; style?: string };
+
 const loadedPreviews = new Map<string, LoadedPreview>();
 const pendingPreviews = new Map<string, Promise<void>>();
 
@@ -36,7 +44,10 @@ async function openFontDialog(): Promise<string | null> {
  * calls only take a hold on it. Every successful call must be paired with a
  * `releaseLocalFontPreview`, or the face stays on the document for the session.
  */
-export async function activateLocalFontPreview(validated: ValidatedLocalFont): Promise<void> {
+export async function activateLocalFontPreview(
+	validated: ValidatedLocalFont,
+	descriptors: PreviewFontDescriptors = {}
+): Promise<void> {
 	const family = validated.previewFamily;
 	const loaded = loadedPreviews.get(family);
 	if (loaded) {
@@ -55,7 +66,7 @@ export async function activateLocalFontPreview(validated: ValidatedLocalFont): P
 	}
 
 	const load = (async () => {
-		const face = new FontFace(family, `url("${validated.previewUrl}")`);
+		const face = new FontFace(family, `url("${validated.previewUrl}")`, descriptors);
 		await face.load();
 		document.fonts.add(face);
 		loadedPreviews.set(family, { face, holders: 1 });

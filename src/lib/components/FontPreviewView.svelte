@@ -93,10 +93,9 @@
 	import {
 		cancelFontFaceParserExport,
 		exportFontFaceParserJson,
-		fontFaceFilePath,
 		inspectFontFace,
 		inspectFontGlyphOutline,
-		validateFontFile
+		previewFontFace
 	} from '$lib/tauri/commands';
 
 	import Icon from './Icon.svelte';
@@ -183,11 +182,15 @@
 	let glyphSize = $state(28);
 	// Non-wght variation axes the user has nudged away from their default, keyed by tag.
 	let axisOverrides = $state<Record<string, number>>({});
-	// Windows exposes an installed variable font to the web view as its named instances only,
-	// so font-variation-settings snaps to the nearest cut instead of interpolating. Loading the
-	// actual file under a synthetic family name gives the web view the real variable resource,
-	// so weight and every other axis move continuously. Null until that face is loaded.
-	let variableRenderFamily = $state<string | null>(null);
+	// The selected face's own bytes, loaded under a synthetic family name. Asking the OS for
+	// a family name instead lets it answer with a duplicate copy, a neighbouring cut, or a
+	// fallback font for characters the face does not have, and a variable font arrives as its
+	// named instances only, so axes snap instead of interpolating. Null until the face loads,
+	// which is also the state the browser build stays in.
+	let exactFaceFamily = $state<string | null>(null);
+	// True once a face has been asked for and could not be loaded, so the character grid can
+	// say the rendering is no longer authoritative rather than quietly falling back.
+	let exactFaceUnavailable = $state(false);
 
 	function safeFontStack(name: string): string {
 		return `"${name.replace(/["\\;\n\r]/g, '')}", system-ui, sans-serif`;
@@ -224,9 +227,10 @@
 	let wghtAxis = $derived(variationAxes.find((axis) => axis.tag === 'wght') ?? null);
 	let otherAxes = $derived(variationAxes.filter((axis) => axis.tag !== 'wght'));
 	let variableWeightActive = $derived(Boolean(family?.variable) && wghtAxis !== null);
-	// Specimens render with the loaded variable file when it is ready, otherwise the installed
-	// family name (which is all a static font needs anyway).
-	let renderFamily = $derived(variableRenderFamily ?? family?.name ?? '');
+	// The tester and the weight rows compare cuts across the whole family, so they keep the
+	// installed family name and let the OS pick each cut. A variable family is the exception:
+	// it renders through the loaded file, which is the only way its axes interpolate.
+	let renderFamily = $derived((family?.variable ? exactFaceFamily : null) ?? family?.name ?? '');
 	let heroWeight = $derived(
 		wghtAxis
 			? Math.round(clamp(previewWeight, wghtAxis.minimum, wghtAxis.maximum))
@@ -341,6 +345,29 @@
 		variableWeightActive ? `font-variation-settings: ${variationSettings(glyphWeight)}; ` : ''
 	);
 
+	// Surfaces that are about the selected face alone — the character grid, the glyph
+	// drawing, the metric chart — render through the loaded face when it is there. With
+	// `font-synthesis: none` on top, the web view cannot fake a bold or an italic the file
+	// does not have, and nothing outside the face can be drawn in its place: a character the
+	// face is missing shows as missing instead of arriving from a fallback font and reading
+	// as coverage.
+	let faceRenderFamily = $derived(exactFaceFamily ?? family?.name ?? '');
+	// A static face is loaded at its own weight, so asking for another one would only invite
+	// a synthetic bold. A variable face advertises the full range and follows the slider.
+	let faceRenderWeight = $derived(
+		exactFaceFamily && !variableWeightActive
+			? (selectedFace?.weight ?? glyphWeight)
+			: glyphWeight
+	);
+	let faceRenderStyle = $derived(
+		`font-family: ${safeFontStack(faceRenderFamily)}; font-weight: ${faceRenderWeight}; ${glyphVariationCss}font-style: ${
+			selectedFace?.style ?? 'normal'
+		};${exactFaceFamily ? ' font-synthesis: none;' : ''}`
+	);
+	// A native build that could not load the face is rendering through the installed family
+	// name, where the system can substitute another font for a character this face lacks.
+	let coverageRenderingApproximate = $derived(native && exactFaceUnavailable);
+
 	let heroStyle = $derived(
 		family
 			? `font-family: ${safeFontStack(renderFamily)}; font-size: ${previewSize}px; font-weight: ${heroWeight}; ${
@@ -377,24 +404,31 @@
 		if (wghtAxis) onPreviewWeight(Math.round(wghtAxis.default));
 	}
 
-	// Load a variable family's real file into the web view so its axes interpolate instead of
-	// snapping to the named instances Windows exposes. Static families and the browser build
-	// keep the installed family name and skip the round trip. Selecting a face runs this once;
-	// dragging the weight does not, since the selected face does not change.
+	// Load the selected face's own bytes into the web view under a synthetic family name.
+	// Rust resolves the face from its opaque ID, lifts it out of any collection it shares a
+	// file with, and revalidates the bytes; no path crosses back. Everything that is about
+	// this one face then draws the face itself. Selecting a face runs this once; dragging the
+	// weight does not, since the selected face does not change.
 	$effect(() => {
 		const face = selectedFace;
 		const isVariable = Boolean(family?.variable);
-		variableRenderFamily = null;
-		if (!isVariable || !face) return;
+		exactFaceFamily = null;
+		exactFaceUnavailable = false;
+		if (!face) return;
 		if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
 
 		let cancelled = false;
 		let heldFamily: string | null = null;
 		void (async () => {
 			try {
-				const path = await fontFaceFilePath(face.id);
-				const validated = await validateFontFile(path);
-				await activateLocalFontPreview(validated);
+				const validated = await previewFontFace(face.id);
+				await activateLocalFontPreview(validated, {
+					// A variable face has to advertise a range or the web view treats it as a
+					// single 400 cut and fakes the rest; a static face advertises its own
+					// weight so nothing is drawn on top of what the file already has.
+					weight: isVariable ? '1 1000' : String(face.weight),
+					style: face.style === 'italic' ? 'italic' : 'normal'
+				});
 				heldFamily = validated.previewFamily;
 				// The face may have changed while the bytes loaded. Hand the hold straight
 				// back rather than leaving it registered for the rest of the session.
@@ -403,11 +437,14 @@
 					heldFamily = null;
 					return;
 				}
-				variableRenderFamily = validated.previewFamily;
+				exactFaceFamily = validated.previewFamily;
 			} catch {
-				// Fall back to the installed family name: the specimen still renders, it just
-				// snaps to the nearest named instance rather than interpolating.
-				if (!cancelled) variableRenderFamily = null;
+				// The specimen still renders through the installed family name, but it is no
+				// longer authoritative, and the character grid says so.
+				if (!cancelled) {
+					exactFaceFamily = null;
+					exactFaceUnavailable = true;
+				}
 			}
 		})();
 
@@ -1258,6 +1295,15 @@
 
 				<div class="glyph-layout">
 					<div class="glyph-catalogue" style={`--glyph-size: ${glyphSize}px;`}>
+						{#if coverageRenderingApproximate}
+							<p class="coverage-warning" role="status">
+								FontNest could not load this face's own file, so the characters
+								below are drawn through the installed family name. Your system can
+								substitute another font for anything this face is missing, which
+								makes a character look supported when it is not. The listed
+								characters still come from the face itself.
+							</p>
+						{/if}
 						{#if inspectionLoading}
 							<div class="glyph-coverage-loading" aria-live="polite">
 								<span></span><span></span><span></span>
@@ -1303,10 +1349,7 @@
 													easing: quintOut
 												}}
 											>
-												<div
-													class="glyphs"
-													style={`font-family: ${safeFontStack(renderFamily)}; font-weight: ${glyphWeight}; ${glyphVariationCss}font-style: ${selectedFace?.style ?? 'normal'};`}
-												>
+												<div class="glyphs" style={faceRenderStyle}>
 													{#each group.codepoints.slice(0, limit) as codepoint (codepoint)}
 														{@const glyph =
 															String.fromCodePoint(codepoint)}
@@ -1453,7 +1496,7 @@
 												x={metricChart.width / 2}
 												y={metricChart.y(0)}
 												text-anchor="middle"
-												style={`font-family: ${safeFontStack(renderFamily)}; font-weight: ${glyphWeight}; ${glyphVariationCss}font-style: ${selectedFace?.style ?? 'normal'}; font-size: ${metricChart.fontSize}px;`}
+												style={`${faceRenderStyle} font-size: ${metricChart.fontSize}px;`}
 											>
 												{selectedGlyph}
 											</text>
@@ -1531,10 +1574,7 @@
 									{/if}
 								</div>
 							{:else}
-								<div
-									class="glyph-big"
-									style={`font-family: ${safeFontStack(renderFamily)}; font-weight: ${glyphWeight}; ${glyphVariationCss}font-style: ${selectedFace?.style ?? 'normal'};`}
-								>
+								<div class="glyph-big" style={faceRenderStyle}>
 									{selectedGlyph}
 									{#if inspectionLoading}
 										<span class="metric-status">Reading font metrics…</span>
@@ -2735,6 +2775,17 @@
 
 	.glyph-coverage-loading span:nth-child(3) {
 		width: 84%;
+	}
+
+	.coverage-warning {
+		margin: 0 0 var(--space-md);
+		padding: var(--space-sm) var(--space-md);
+		border: 1px solid var(--color-border);
+		border-radius: 10px;
+		background: var(--color-panel);
+		color: var(--color-muted);
+		font-size: var(--text-body-sm);
+		line-height: 1.5;
 	}
 
 	.glyph-coverage-loading p,

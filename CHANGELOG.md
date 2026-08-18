@@ -12,6 +12,17 @@ a bundled copy when you are offline.
 
 ### Changed
 
+- The character grid, the glyph drawing and the metric chart in a font's preview now draw the
+  selected face's own file rather than asking your system for the family by name. This matters
+  most for coverage: your system used to quietly borrow a character from another font when the
+  face was missing it, so a character could look supported when it was not. Anything the face
+  does not have now shows as missing, and a face that has no real bold or italic is no longer
+  faked into one. If the file cannot be loaded for some reason, the grid says so instead of
+  pretending.
+- Fonts that share a file with others (Cambria, Yu Gothic and the rest of the .ttc collections)
+  now preview as the face you picked. Previously the preview fell back to the first face in the
+  file, so choosing a different style could leave the specimen unchanged.
+
 - FontNest now keeps a version stamp on the record of the fonts it installed for you, and upgrades
   that record in one step that either finishes or leaves it exactly as it was. Records written by
   earlier versions are picked up as they are, with nothing lost.
