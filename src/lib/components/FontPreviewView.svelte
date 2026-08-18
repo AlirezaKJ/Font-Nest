@@ -162,6 +162,8 @@
 	// The export ID that is currently streaming, so it can be cancelled when the user
 	// leaves the panel or moves to another face instead of parsing on regardless.
 	let activeParserExportId: string | null = null;
+	// How long the queued channel messages get to flush after the command returns.
+	const PARSER_STREAM_FLUSH_MS = 2000;
 	const parserJsonText = $derived(parserExportText(parserExport));
 	const parserPreviewText = $derived(parserJsonText.slice(0, PARSER_PREVIEW_CHARS));
 	const parserTruncationNote = $derived(parserExportTruncationNote(parserExport));
@@ -713,13 +715,31 @@
 				// overwrite the snapshot now on screen.
 				if (activeParserExportId !== exportId) return;
 				parserExport = applyParserJsonEvent(parserExport, event);
+				// The stream says when it is done, not the command promise. Chunks are
+				// delivered over the channel and keep arriving after the command itself
+				// has returned, so settling on the promise would drop the tail of them.
+				if (event.event === 'finished' || event.event === 'cancelled') {
+					activeParserExportId = null;
+					parserLoading = false;
+				}
 			});
+			// The command returns once Rust has sent everything, and the queued messages
+			// flush just after. If none of them ever settles the stream the export is stuck
+			// rather than slow, so say so instead of leaving a progress readout that never
+			// moves.
+			window.setTimeout(() => {
+				if (activeParserExportId !== exportId) return;
+				activeParserExportId = null;
+				parserLoading = false;
+				parserExport = null;
+				parserError = 'FontNest could not finish reading that font face.';
+			}, PARSER_STREAM_FLUSH_MS);
 		} catch (error) {
-			if (activeParserExportId === exportId) parserError = commandErrorMessage(error);
-		} finally {
 			if (activeParserExportId === exportId) {
 				activeParserExportId = null;
 				parserLoading = false;
+				parserExport = null;
+				parserError = commandErrorMessage(error);
 			}
 		}
 	}
@@ -1852,8 +1872,8 @@
 							</div>
 							{#if parserJsonText.length > parserPreviewText.length}
 								<p class="parser-note">
-									Showing the first {formatBytes(parserPreviewText.length)} here. Copy
-									JSON gives you the whole snapshot.
+									Showing the first {formatInteger(parserPreviewText.length)} characters
+									here. Copy JSON gives you the whole snapshot.
 								</p>
 							{/if}
 						{:else if parserLoading}
