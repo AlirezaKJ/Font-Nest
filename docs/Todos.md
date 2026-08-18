@@ -429,7 +429,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 
 ### Provider hardening
 
-- [ ] **P0** Test the actual bundled release manifest rather than only a small fixture manifest.
+- [x] **P0** Test the actual bundled release manifest rather than only a small fixture manifest. Done 2026-08-19: `shipped_manifest_tests` in `google_fonts.rs` runs the shipping code against `resources/google-fonts.json` itself, at its real 1,928 families and 3,571 artifacts, rather than against the two-family fixture. The snapshot has to pass the same validation every command starts with, and its label has to name the commit its artifacts were read from, so the two cannot describe different revisions. Every artifact has to describe itself to the ownership lookup uninstall proves a file with, and to derive a managed file name no other artifact takes, because two artifacts landing on one name would install over each other and leave a proof measured against the wrong bytes. Every category and subset in the data has to be a filter the interface can actually ask for and has to find something, which the fixture cannot check because it never grows a Kannada subset. Paging has to reach all 1,928 families exactly once in a total order, since anything the sort leaves equal can swap between offset-based requests and hide behind its neighbour. Both rank sets have to be complete and free of ties, every family has to fit inside one install request in count and in bytes (the largest is 102 MB against a 128 MB ceiling), and the technology filter has to split the whole catalogue rather than collapse to one side when a refresh renames the variable styles.
 - [ ] **P0** Make refresh output deterministic and atomic; add timeout, retry, schema validation, collision detection, source-age, coverage, and skipped-family reports.
 - [ ] **P0** Parse artifact styles and axes from font bytes rather than only filenames.
 - [ ] **P1** Add stronger release-resource digest/signature validation while retaining Git SHA provenance.
@@ -685,7 +685,7 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 - [ ] **P1** Add fuzz targets for SFNT/collection parsing, manifests, IPC DTOs, paths, and state-machine transitions.
 - [ ] **P1** Mock provider HTTP for redirects, timeouts, size mismatch, chunk overflow, cancellation, corrupt cache, hash mismatch, retries, and concurrency.
 - [ ] **P1** Test stale registry entries, externally removed/modified managed files, shared licences, watcher storms, rename, partial permissions, and drive disconnect.
-- [ ] **P1** Test the actual bundled Google Fonts manifest in CI.
+- [x] **P1** Test the actual bundled Google Fonts manifest in CI. Done 2026-08-19: a `Rust checks` workflow runs `cargo fmt`, `cargo clippy -D warnings` and the whole Rust suite on `windows-latest` for every push to `main` and every pull request, which is the first time any Rust test has run outside a developer's machine. It builds the frontend first because `tauri::generate_context!` reads it at compile time, and it repeats no version: pnpm reads `packageManager`, Node reads `engines.node`, and `rustup toolchain install` reads `rust-toolchain.toml` with its components.
 
 ### Frontend, accessibility, and E2E
 

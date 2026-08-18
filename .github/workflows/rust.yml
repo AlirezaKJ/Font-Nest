@@ -1,0 +1,61 @@
+name: Rust checks
+
+# The bundled Google Fonts snapshot is 2.5 MB of real data no fixture stands in for, and the
+# ownership, journal and recovery tests all measure Windows behaviour. Both have to run somewhere
+# other than whichever machine happened to write the change.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Format, lint, and test on Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      # pnpm reads packageManager and Node reads engines.node, so neither repeats a version this
+      # repository already pins.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      # rustup reads rust-toolchain.toml, including the clippy and rustfmt components, so the
+      # pinned toolchain installs itself and nothing here can drift from it.
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # `tauri::generate_context!` reads the built frontend at compile time, so the Rust tests
+      # cannot be compiled without it.
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the frontend
+        run: pnpm build
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Lint
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --manifest-path src-tauri/Cargo.toml

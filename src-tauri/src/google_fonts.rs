@@ -1262,19 +1262,6 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_manifest_carries_ranks_for_the_popularity_sorts() {
-        let manifest = parse_manifest(super::BUNDLED_MANIFEST).expect("the shipped manifest");
-        let ranked = manifest
-            .families
-            .iter()
-            .filter(|family| family.popularity_rank.is_some() && family.trending_rank.is_some())
-            .count();
-
-        // Without ranks both sorts silently collapse onto the alphabetical tiebreak.
-        assert_eq!(ranked, manifest.families.len());
-    }
-
-    #[test]
     fn install_selection_cannot_cross_family_boundaries() {
         let manifest = parse_manifest(MANIFEST).expect("a trusted manifest");
         let error = selected_artifacts(
@@ -1292,6 +1279,314 @@ mod tests {
         assert_eq!(
             git_blob_sha(b"test"),
             "30d74d258442c7c65512eafab474568dd706c430"
+        );
+    }
+}
+
+/// What the file `FontNest` actually ships has to satisfy.
+///
+/// The fixture above proves the rules on two families; these run the same code against
+/// `resources/google-fonts.json` at its real size. A refresh that drops the ranks, collides two
+/// installed file names, or produces a facet the interface cannot ask for leaves every fixture
+/// test green, because the fixture never grows a Kannada subset or a family with eighteen styles.
+#[cfg(test)]
+mod shipped_manifest_tests {
+    use std::collections::{BTreeSet, HashMap, HashSet};
+
+    use super::{
+        BUNDLED_MANIFEST, GoogleFontPageRequest, GoogleFontsManifest, MANIFEST_SCHEMA_VERSION,
+        MAX_CATALOGUE_PAGE_SIZE, MAX_INSTALL_ARTIFACTS, MAX_INSTALL_BYTES, PROVIDER_ID,
+        catalogue_page, catalogue_request_is_valid, family_is_variable, manifest_artifact,
+        parse_manifest, selected_artifacts,
+    };
+    use crate::dto::GoogleFontPageRequest as GoogleFontPageRequestDto;
+    use crate::font_platform::managed_file_name;
+    use crate::managed_ownership::ProviderArtifact;
+
+    /// A snapshot that lost most of its catalogue is a broken refresh, not a smaller Google Fonts.
+    /// The shipped snapshot carries 1,928 families and 3,571 artifacts; these floors leave room for
+    /// upstream to retire fonts without leaving room for a truncated download to pass.
+    const MINIMUM_FAMILIES: usize = 1_500;
+    const MINIMUM_ARTIFACTS: usize = 3_000;
+
+    fn shipped() -> GoogleFontsManifest {
+        parse_manifest(BUNDLED_MANIFEST).expect("the bundled snapshot must pass its own validation")
+    }
+
+    fn page(category: &str, subset: &str, technology: &str) -> GoogleFontPageRequest {
+        GoogleFontPageRequest {
+            query: String::new(),
+            category: category.to_owned(),
+            subset: subset.to_owned(),
+            technology: technology.to_owned(),
+            availability: "all".to_owned(),
+            sort: "name-asc".to_owned(),
+            offset: 0,
+            limit: MAX_CATALOGUE_PAGE_SIZE,
+        }
+    }
+
+    /// The same request as it arrives from the interface, which is where the filter values are
+    /// checked before anything reads the catalogue.
+    fn requested(category: &str, subset: &str) -> GoogleFontPageRequestDto {
+        GoogleFontPageRequestDto {
+            query: String::new(),
+            category: category.to_owned(),
+            subset: subset.to_owned(),
+            technology: "all".to_owned(),
+            availability: "all".to_owned(),
+            sort: "name-asc".to_owned(),
+            offset: 0,
+            limit: 60,
+        }
+    }
+
+    #[test]
+    fn the_shipped_snapshot_passes_the_validation_every_command_starts_with() {
+        let manifest = shipped();
+        let artifacts = manifest
+            .families
+            .iter()
+            .map(|family| family.artifacts.len())
+            .sum::<usize>();
+
+        assert_eq!(manifest.schema_version, MANIFEST_SCHEMA_VERSION);
+        // The snapshot label names the commit the artifacts were read from, so the two fields
+        // cannot drift into describing different revisions of the upstream repository.
+        assert!(
+            manifest.snapshot.ends_with(&manifest.source_commit[..12]),
+            "snapshot {} does not name commit {}",
+            manifest.snapshot,
+            manifest.source_commit
+        );
+        assert!(
+            manifest.families.len() >= MINIMUM_FAMILIES,
+            "the snapshot carries only {} families",
+            manifest.families.len()
+        );
+        assert!(
+            artifacts >= MINIMUM_ARTIFACTS,
+            "the snapshot carries only {artifacts} artifacts"
+        );
+        // `artifact_summary` narrows the declared size to a u32 for the interface and panics if it
+        // does not fit, so no shipped artifact may be that large.
+        assert!(
+            manifest
+                .families
+                .iter()
+                .flat_map(|family| &family.artifacts)
+                .all(|artifact| u32::try_from(artifact.size_bytes).is_ok())
+        );
+    }
+
+    #[test]
+    fn every_shipped_artifact_answers_the_ownership_lookup_with_its_own_record() {
+        let manifest = shipped();
+
+        for artifact in manifest
+            .families
+            .iter()
+            .flat_map(|family| &family.artifacts)
+        {
+            assert_eq!(
+                manifest_artifact(PROVIDER_ID, &artifact.id),
+                Some(ProviderArtifact {
+                    file_name: artifact.file_name.clone(),
+                    content_hash: artifact.git_blob_sha.clone(),
+                    size_bytes: artifact.size_bytes,
+                }),
+                "{} does not describe itself to the ownership check that has to prove it",
+                artifact.id
+            );
+        }
+
+        let known = &manifest.families[0].artifacts[0].id;
+        assert_eq!(manifest_artifact("google-fonts-mirror", known), None);
+    }
+
+    #[test]
+    fn every_shipped_artifact_takes_a_distinct_managed_file_name() {
+        let manifest = shipped();
+        let mut names = HashSet::new();
+
+        for artifact in manifest
+            .families
+            .iter()
+            .flat_map(|family| &family.artifacts)
+        {
+            let name = managed_file_name(&artifact.file_name, &artifact.git_blob_sha)
+                .unwrap_or_else(|_| panic!("{} cannot be given a managed file name", artifact.id));
+            // Two artifacts landing on one name would install over each other, and the ownership
+            // proof for one would then be measured against the other's bytes.
+            assert!(
+                names.insert(name.clone()),
+                "{name} is claimed by more than one artifact"
+            );
+        }
+    }
+
+    #[test]
+    fn every_facet_in_the_shipped_snapshot_can_be_asked_for() {
+        let manifest = shipped();
+        let installed = HashSet::new();
+        let categories = manifest
+            .families
+            .iter()
+            .map(|family| family.category.clone())
+            .collect::<BTreeSet<_>>();
+        let subsets = manifest
+            .families
+            .iter()
+            .flat_map(|family| family.subsets.iter().cloned())
+            .collect::<BTreeSet<_>>();
+
+        for category in &categories {
+            assert!(
+                catalogue_request_is_valid(&requested(category, "all")),
+                "the {category} category is in the snapshot but cannot be requested"
+            );
+            assert!(
+                catalogue_page(&manifest, &page(category, "all", "all"), &installed).total > 0,
+                "filtering to {category} finds nothing"
+            );
+        }
+
+        for subset in &subsets {
+            assert!(
+                catalogue_request_is_valid(&requested("all", subset)),
+                "the {subset} subset is in the snapshot but cannot be requested"
+            );
+            assert!(
+                catalogue_page(&manifest, &page("all", subset, "all"), &installed).total > 0,
+                "filtering to {subset} finds nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn paging_the_shipped_catalogue_reaches_every_family_exactly_once() {
+        let manifest = shipped();
+        let installed = HashSet::new();
+        let names = manifest
+            .families
+            .iter()
+            .map(|family| (family.id.as_str(), family.family.to_lowercase()))
+            .collect::<HashMap<_, _>>();
+        let mut seen = Vec::with_capacity(manifest.families.len());
+        let mut offset = 0;
+
+        loop {
+            let request = GoogleFontPageRequest {
+                offset,
+                ..page("all", "all", "all")
+            };
+            let served = catalogue_page(&manifest, &request, &installed);
+            assert_eq!(served.total, manifest.families.len());
+            assert_eq!(served.limit, MAX_CATALOGUE_PAGE_SIZE);
+            if served.family_ids.is_empty() {
+                break;
+            }
+            offset += served.family_ids.len();
+            seen.extend(served.family_ids);
+        }
+
+        assert_eq!(seen.len(), manifest.families.len());
+        assert_eq!(
+            seen.iter().collect::<HashSet<_>>().len(),
+            seen.len(),
+            "a family is served on two pages"
+        );
+        // Paging is offset based, so the order has to be total. Two families the sort leaves equal
+        // could swap between requests and hide one of them behind the other.
+        for pair in seen.windows(2) {
+            let earlier = &names[pair[0].as_str()];
+            let later = &names[pair[1].as_str()];
+            assert!(
+                earlier < later,
+                "{earlier} and {later} are not ordered against each other"
+            );
+        }
+    }
+
+    #[test]
+    fn the_shipped_ranks_order_the_catalogue_without_ties() {
+        let manifest = shipped();
+        let mut popularity = HashSet::new();
+        let mut trending = HashSet::new();
+
+        for family in &manifest.families {
+            // Without both ranks the popularity and trending sorts silently collapse onto the
+            // alphabetical tiebreak, and a shared rank leaves the order between two families
+            // arbitrary.
+            let (Some(popularity_rank), Some(trending_rank)) =
+                (family.popularity_rank, family.trending_rank)
+            else {
+                panic!("{} is missing a popularity or trending rank", family.id);
+            };
+            assert!(
+                popularity.insert(popularity_rank),
+                "popularity rank {popularity_rank} is shared by more than one family"
+            );
+            assert!(
+                trending.insert(trending_rank),
+                "trending rank {trending_rank} is shared by more than one family"
+            );
+        }
+    }
+
+    #[test]
+    fn every_shipped_family_fits_a_single_install_request() {
+        let manifest = shipped();
+
+        for family in &manifest.families {
+            let artifact_ids = family
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.id.clone())
+                .collect::<Vec<_>>();
+            let bytes = family
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.size_bytes)
+                .sum::<u64>();
+
+            // Installing every style of a family is one request, so a family past either limit
+            // could only be refused as invalid, with nothing to tell the person to do differently.
+            assert!(
+                artifact_ids.len() <= MAX_INSTALL_ARTIFACTS,
+                "{} carries {} styles, more than one request may install",
+                family.id,
+                artifact_ids.len()
+            );
+            assert!(
+                bytes <= MAX_INSTALL_BYTES,
+                "installing all of {} would ask for {bytes} bytes",
+                family.id
+            );
+            selected_artifacts(&manifest, &family.id, &artifact_ids)
+                .unwrap_or_else(|_| panic!("{} cannot select its own styles", family.id));
+        }
+    }
+
+    #[test]
+    fn the_technology_filter_splits_the_whole_shipped_catalogue() {
+        let manifest = shipped();
+        let installed = HashSet::new();
+        let variable = catalogue_page(&manifest, &page("all", "all", "variable"), &installed).total;
+        let fixed = catalogue_page(&manifest, &page("all", "all", "static"), &installed).total;
+        let counted = manifest
+            .families
+            .iter()
+            .filter(|family| family_is_variable(family))
+            .count();
+
+        assert_eq!(variable, counted);
+        assert_eq!(variable + fixed, manifest.families.len());
+        // The filter reads the artifact style, so a refresh that renames the variable styles would
+        // leave one side of it answering nothing.
+        assert!(
+            variable > 0 && fixed > 0,
+            "the technology filter puts every family on one side"
         );
     }
 }
