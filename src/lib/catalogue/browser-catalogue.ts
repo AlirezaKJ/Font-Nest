@@ -120,6 +120,21 @@ const browserFamilies: BrowserFamily[] = [
 	}
 ];
 
+// Fixture IDs have to look like the ones the backend hands out: opaque, prefixed, and 32 hex
+// characters, so browser development exercises the same shape the desktop app does. This hash
+// only has to be deterministic, not collision-resistant.
+function fixtureId(kind: 'family' | 'face', seed: string): string {
+	let digest = '';
+	for (let round = 0; round < 4; round += 1) {
+		let hash = (0x811c9dc5 ^ round) >>> 0;
+		for (const character of `${kind}:${seed}`) {
+			hash = Math.imul(hash ^ (character.codePointAt(0) ?? 0), 0x01000193) >>> 0;
+		}
+		digest += hash.toString(16).padStart(8, '0');
+	}
+	return `${kind}:${digest}`;
+}
+
 function createFace(
 	family: BrowserFamily,
 	styleName: string,
@@ -134,7 +149,7 @@ function createFace(
 	// once for everyone and again for one account.
 	const origin: FontOrigin = isDuplicate ? 'machineInstalled' : family.origin;
 	return {
-		id: `${family.name.toLowerCase()}:${index}`,
+		id: fixtureId('face', `${family.name}/${index}`),
 		postScriptName: `${fileStem}-${styleName.replaceAll(' ', '')}`,
 		styleName,
 		style,
@@ -153,7 +168,7 @@ function createFamily(family: BrowserFamily): FontFamilySummary {
 		createFace(family, name, weight, style, index)
 	);
 	return {
-		id: family.name.toLowerCase(),
+		id: fixtureId('family', family.name),
 		name: family.name,
 		faceCount: faces.length,
 		fileCount: family.conflict ? 2 : 1,

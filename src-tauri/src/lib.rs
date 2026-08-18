@@ -1,6 +1,7 @@
 mod catalogue;
 mod commands;
 mod dto;
+mod font_identity;
 mod font_inspection;
 mod font_origin;
 mod font_platform;

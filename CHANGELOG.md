@@ -12,6 +12,16 @@ a bundled copy when you are offline.
 
 ### Changed
 
+- A font now keeps the same identity when its file is renamed or moved to another folder on the
+  same drive. FontNest used to name each font after where it sat on disk and each family after how
+  its name was spelled, so renaming a file, or a family arriving under a slightly different
+  spelling, quietly turned it into a different font: a saved family stopped matching and the
+  preview you had open pointed at nothing. Fonts are now identified by the record your filesystem
+  keeps for the file, which a rename does not change, and FontNest writes that down so the answer
+  survives a restart. Two copies of the same font installed in two places still count as two
+  fonts, which is what the Conflicts view is there to show you. One-off cost of the change: saved
+  families from an older version are cleared, so you will need to save them again.
+
 - Installing fonts from Discover is now crash-safe. FontNest writes down every file it is about to
   place and every registry entry it is about to make before it touches either, and only records
   the install once all of it succeeded. If the app is closed, killed or loses power halfway

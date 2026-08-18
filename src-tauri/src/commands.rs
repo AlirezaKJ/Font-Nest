@@ -12,15 +12,15 @@ use crate::dto::{
     GoogleFontFamilyDetails, GoogleFontInstallResult, GoogleFontPage, GoogleFontPageRequest,
     GoogleFontPreview, InstallGoogleFontRequest, ManagedStorageStatus, ValidatedLocalFont,
 };
+use crate::font_identity::{IdentityKind, is_well_formed};
 use crate::font_inspection::{self, CancelToken, FontInspectionError, ParserJsonSnapshot};
 use crate::font_platform;
 use crate::google_fonts::{self, GoogleFontsError};
 use crate::local_fonts::{self, LocalFontError};
+use crate::managed_installations::ManagedInstallationRepository;
 use crate::managed_storage::ManagedStorage;
 use crate::release_notes::{self, ReleaseNotesError};
 
-const FACE_ID_PREFIX: &str = "face:";
-const SHA1_HEX_LENGTH: usize = 40;
 const MAX_GLYPH_VARIATIONS: usize = 64;
 /// Longest caller-generated export ID accepted for a parser snapshot.
 const MAX_EXPORT_ID_LENGTH: usize = 64;
@@ -107,9 +107,21 @@ impl CatalogueState {
 
 #[tauri::command]
 pub async fn scan_installed_fonts(app: tauri::AppHandle) -> Result<FontCatalogue, CommandError> {
-    let scanned = tauri::async_runtime::spawn_blocking(catalogue::scan_installed_fonts)
-        .await
-        .map_err(|_| CommandError::catalogue_unavailable())?;
+    // The ledger is what makes a font's ID outlive the scan that found it. A session in read-only
+    // recovery must not write to it, and scans without it: the IDs are the same ones the ledger
+    // would have stored, they just are not recorded for the next launch.
+    let ledger = app
+        .state::<ManagedStorage>()
+        .ensure_writable()
+        .ok()
+        .and_then(|()| app.path().app_data_dir().ok())
+        .map(|app_data_dir| ManagedInstallationRepository::in_app_data_dir(&app_data_dir));
+
+    let scanned = tauri::async_runtime::spawn_blocking(move || {
+        catalogue::scan_installed_fonts(ledger.as_ref())
+    })
+    .await
+    .map_err(|_| CommandError::catalogue_unavailable())?;
     app.state::<CatalogueState>().replace(scanned.store)?;
     Ok(scanned.catalogue)
 }
@@ -665,13 +677,11 @@ pub(crate) fn is_trusted_app_origin(url: &tauri::Url) -> bool {
 }
 
 fn validate_face_id(face_id: &str) -> Result<(), CommandError> {
-    let Some(digest) = face_id.strip_prefix(FACE_ID_PREFIX) else {
-        return Err(CommandError::font_face_unavailable());
-    };
-    if digest.len() != SHA1_HEX_LENGTH || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(CommandError::font_face_unavailable());
+    if is_well_formed(IdentityKind::Face, face_id) {
+        Ok(())
+    } else {
+        Err(CommandError::font_face_unavailable())
     }
-    Ok(())
 }
 
 /// Export IDs come from the frontend, so they are kept to a short opaque shape: they are
@@ -799,9 +809,10 @@ mod tests {
 
     #[test]
     fn parser_commands_only_accept_opaque_face_ids() {
-        assert!(validate_face_id("face:0123456789abcdef0123456789abcdef01234567").is_ok());
+        assert!(validate_face_id("face:0123456789abcdef0123456789abcdef").is_ok());
         assert!(validate_face_id("C:\\Windows\\Fonts\\arial.ttf").is_err());
         assert!(validate_face_id("face:not-a-digest").is_err());
+        assert!(validate_face_id("family:0123456789abcdef0123456789abcdef").is_err());
     }
 
     #[test]
@@ -888,7 +899,7 @@ mod tests {
     #[test]
     fn glyph_outline_requests_validate_codepoints_and_variations() {
         let valid = FontGlyphOutlineRequest {
-            face_id: "face:0123456789abcdef0123456789abcdef01234567".to_owned(),
+            face_id: "face:0123456789abcdef0123456789abcdef".to_owned(),
             codepoint: u32::from('A'),
             variations: vec![FontGlyphVariationValue {
                 tag: "wght".to_owned(),

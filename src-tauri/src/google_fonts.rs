@@ -406,10 +406,9 @@ async fn journalled_install(
     let ledger_id = operation_id.clone();
     // Recording the installations and closing the journal entry is one transaction: FontNest only
     // ever claims a font it can prove it placed.
-    let committed = tauri::async_runtime::spawn_blocking(move || {
-        ledger.commit_operation(&ledger_id, &records)
-    })
-    .await;
+    let committed =
+        tauri::async_runtime::spawn_blocking(move || ledger.commit_operation(&ledger_id, &records))
+            .await;
     if !matches!(committed, Ok(Ok(()))) {
         abandon_operation(repository, &operation_id, completed).await;
         return Err(GoogleFontsError::Database);
@@ -692,10 +691,9 @@ async fn abandon_operation(
 
     let repository = repository.clone();
     let operation_id = operation_id.to_owned();
-    let closed = tauri::async_runtime::spawn_blocking(move || {
-        repository.discard_operation(&operation_id)
-    })
-    .await;
+    let closed =
+        tauri::async_runtime::spawn_blocking(move || repository.discard_operation(&operation_id))
+            .await;
     if !matches!(closed, Ok(Ok(()))) {
         log::error!(
             "An undone font operation stayed in the journal. The next launch closes it; nothing is left on the computer."

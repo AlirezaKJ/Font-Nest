@@ -1,14 +1,16 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
+
+use crate::font_identity::IdentityKey;
 
 /// File name of the managed-installation ledger inside the application data directory.
 pub const LEDGER_FILE_NAME: &str = "fontnest.sqlite3";
 
 /// Highest schema version this build understands. It must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// The journal state of an operation that may still be undone at the next launch.
 const OPERATION_OPEN: &str = "open";
@@ -16,6 +18,11 @@ const OPERATION_OPEN: &str = "open";
 /// The journal state of an operation recovery gave up on. It is kept for diagnostics and is
 /// never retried, so a path `FontNest` refuses to touch cannot make every launch slower.
 const OPERATION_QUARANTINED: &str = "quarantined";
+
+/// How many times a first-sighted identity is moved off a taken ID before the ledger gives up and
+/// lets the session fall back to its derived ID. Reaching even the second attempt means two
+/// 128-bit digests collided, so this is a backstop rather than a path anything takes.
+const IDENTITY_COLLISION_ATTEMPTS: u32 = 4;
 
 /// How long a statement waits for another connection to release the write lock before it
 /// reports a busy database.
@@ -29,7 +36,8 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// carry these objects at `user_version = 0`; it adopts them without touching their rows. Every
 /// later migration must be written strictly, because it can only ever meet a ledger this build
 /// created.
-const MIGRATIONS: &[&str] = &["
+const MIGRATIONS: &[&str] = &[
+    "
     CREATE TABLE IF NOT EXISTS managed_installations (
         id TEXT PRIMARY KEY NOT NULL,
         provider TEXT NOT NULL,
@@ -74,7 +82,20 @@ const MIGRATIONS: &[&str] = &["
     CREATE INDEX idx_managed_operations_state ON managed_operations(state);
 
     ALTER TABLE managed_installations ADD COLUMN operation_id TEXT NOT NULL DEFAULT '';
-"];
+",
+    "
+    CREATE TABLE font_identities (
+        id TEXT PRIMARY KEY NOT NULL,
+        kind TEXT NOT NULL,
+        identity_key TEXT NOT NULL,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        UNIQUE(kind, identity_key)
+    );
+
+    CREATE INDEX idx_font_identities_kind_seen ON font_identities(kind, last_seen_at);
+",
+];
 
 /// Why the ledger could not be brought up to the schema this build expects.
 #[derive(Debug, thiserror::Error)]
@@ -438,6 +459,81 @@ impl ManagedInstallationRepository {
         )
     }
 
+    /// Gives every scanned family and face the ID the ledger already knows it by, and records the
+    /// ones it is seeing for the first time.
+    ///
+    /// A first sighting is stored under the ID its identity key derives, so the ledger and a
+    /// session that cannot reach the ledger agree. What the ledger adds is durability: once a row
+    /// exists, that ID stays with the identity key even if the derivation later changes, which is
+    /// what a rename or an explicit family merge will need.
+    ///
+    /// A derived ID that is already taken by a different key is a real digest collision. It is
+    /// logged and the newcomer is moved onto a disambiguated ID rather than allowed to shadow the
+    /// row that got there first.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the ledger cannot be read or written. The caller falls back
+    /// to derived IDs for the session, which are the same IDs in every case except a rename the
+    /// ledger had already recorded.
+    pub fn resolve_font_identities(
+        &self,
+        keys: &[IdentityKey],
+    ) -> Result<HashMap<String, String>, rusqlite::Error> {
+        let mut resolved = HashMap::with_capacity(keys.len());
+        if keys.is_empty() {
+            return Ok(resolved);
+        }
+
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        let now = unix_seconds();
+        {
+            let mut lookup = transaction
+                .prepare("SELECT id FROM font_identities WHERE kind = ?1 AND identity_key = ?2")?;
+            let mut touch = transaction
+                .prepare("UPDATE font_identities SET last_seen_at = ?2 WHERE id = ?1")?;
+            let mut claim = transaction.prepare(
+                "INSERT INTO font_identities (id, kind, identity_key, first_seen_at, last_seen_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4)
+                 ON CONFLICT(id) DO NOTHING",
+            )?;
+
+            for key in keys {
+                if resolved.contains_key(key.key()) {
+                    continue;
+                }
+                let kind = key.kind().as_str();
+                let existing: Option<String> = lookup
+                    .query_row(params![kind, key.key()], |row| row.get(0))
+                    .optional()?;
+                if let Some(id) = existing {
+                    touch.execute(params![id, now])?;
+                    resolved.insert(key.key().to_owned(), id);
+                    continue;
+                }
+
+                let mut candidate = key.clone();
+                for attempt in 1..=IDENTITY_COLLISION_ATTEMPTS {
+                    let inserted =
+                        claim.execute(params![candidate.derived_id(), kind, key.key(), now])?;
+                    if inserted == 1 {
+                        resolved.insert(key.key().to_owned(), candidate.into_derived_id());
+                        break;
+                    }
+                    log::error!(
+                        "Two different {kind} identities derive the ID {}. The newer one is being moved off it.",
+                        candidate.derived_id()
+                    );
+                    candidate = key.disambiguated(attempt);
+                }
+            }
+        }
+        transaction.commit()?;
+
+        Ok(resolved)
+    }
+
     /// Opens a connection with the pragmas every ledger connection needs. They are set outside a
     /// transaction on purpose: `SQLite` ignores a `foreign_keys` change inside one, and the
     /// journal mode is a property of the file rather than of a statement. `synchronous = FULL`
@@ -510,7 +606,6 @@ fn schema_version(connection: &Connection) -> Result<i64, rusqlite::Error> {
     connection.pragma_query_value(None, "user_version", |row| row.get(0))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -518,6 +613,7 @@ mod tests {
         ManagedInstallationRepository, OperationKind, PlannedInstallStep, SCHEMA_VERSION,
         schema_version,
     };
+    use crate::font_identity::{FileIdentity, face_identity_key, family_identity_key};
     use rusqlite::Connection;
     use std::path::Path;
 
@@ -586,6 +682,107 @@ mod tests {
     fn only(operations: &[InterruptedOperation]) -> &InterruptedOperation {
         assert_eq!(operations.len(), 1, "exactly one open operation");
         &operations[0]
+    }
+
+    /// A font meets the ledger under the ID its own identity derives, so a session that cannot
+    /// open the ledger names it exactly the same way.
+    #[test]
+    fn a_first_sighting_is_recorded_under_the_id_it_derives() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let repository = ManagedInstallationRepository::in_app_data_dir(temp.path());
+        repository.initialize().expect("the migrations");
+        let key = family_identity_key("Source Serif 4");
+
+        let resolved = repository
+            .resolve_font_identities(std::slice::from_ref(&key))
+            .expect("the identities resolve");
+
+        assert_eq!(
+            resolved.get(key.key()).map(String::as_str),
+            Some(key.derived_id())
+        );
+    }
+
+    /// The point of writing identities down: the second scan gets the same answer as the first,
+    /// even for a font whose file has moved since.
+    #[test]
+    fn a_second_scan_gets_the_same_ids_as_the_first() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let repository = ManagedInstallationRepository::in_app_data_dir(temp.path());
+        repository.initialize().expect("the migrations");
+        let keys = vec![
+            family_identity_key("Inter"),
+            face_identity_key(
+                &FileIdentity::Platform {
+                    volume: 3,
+                    index: 91,
+                },
+                0,
+                "Inter-Regular",
+            ),
+        ];
+
+        let first = repository
+            .resolve_font_identities(&keys)
+            .expect("the first scan");
+        let second = repository
+            .resolve_font_identities(&keys)
+            .expect("the second scan");
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 2);
+    }
+
+    /// An ID the ledger has already handed out stays with the identity it was given to. A newer
+    /// identity that derives the same ID is moved off it instead of shadowing the first.
+    #[test]
+    fn a_taken_id_is_never_handed_to_a_second_identity() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let repository = ManagedInstallationRepository::in_app_data_dir(temp.path());
+        repository.initialize().expect("the migrations");
+        let first = family_identity_key("Inter");
+        let colliding = family_identity_key("Geist");
+        {
+            // Stand in for a digest collision by claiming the second family's derived ID under an
+            // unrelated key, which is the only way this can happen in practice.
+            let connection =
+                Connection::open(temp.path().join(super::LEDGER_FILE_NAME)).expect("the ledger");
+            connection
+                .execute(
+                    "INSERT INTO font_identities (id, kind, identity_key, first_seen_at, last_seen_at)
+                     VALUES (?1, 'family', 'a-key-from-an-older-build', 0, 0)",
+                    [colliding.derived_id()],
+                )
+                .expect("the claim is written");
+        }
+
+        let resolved = repository
+            .resolve_font_identities(&[first.clone(), colliding.clone()])
+            .expect("the identities resolve");
+
+        assert_eq!(
+            resolved.get(first.key()).map(String::as_str),
+            Some(first.derived_id())
+        );
+        let moved = resolved.get(colliding.key()).expect("the second family");
+        assert_ne!(moved, colliding.derived_id());
+        assert_eq!(moved, colliding.disambiguated(1).derived_id());
+    }
+
+    /// A family and a face are different kinds of thing, so one key never answers for the other.
+    #[test]
+    fn identities_of_different_kinds_are_stored_apart() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let repository = ManagedInstallationRepository::in_app_data_dir(temp.path());
+        repository.initialize().expect("the migrations");
+        let family = family_identity_key("Inter");
+        let face = face_identity_key(&FileIdentity::Embedded, 0, "Inter-Regular");
+
+        let resolved = repository
+            .resolve_font_identities(&[family.clone(), face.clone()])
+            .expect("the identities resolve");
+
+        assert_ne!(resolved[family.key()], resolved[face.key()]);
     }
 
     #[test]

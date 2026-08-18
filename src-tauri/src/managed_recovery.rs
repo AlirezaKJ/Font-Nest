@@ -199,12 +199,7 @@ mod tests {
         let repository = ManagedInstallationRepository::in_app_data_dir(directory);
         repository.initialize().expect("the first migration");
         repository
-            .begin_operation(
-                OPERATION,
-                OperationKind::Install,
-                "google-fonts",
-                &[step()],
-            )
+            .begin_operation(OPERATION, OperationKind::Install, "google-fonts", &[step()])
             .expect("the journal write");
         repository
     }

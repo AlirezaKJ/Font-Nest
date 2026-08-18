@@ -298,7 +298,10 @@ pub fn is_managed_installation_path(path: &Path) -> bool {
     let (Ok(font_dir), Some(parent)) = (user_font_directory(), path.parent()) else {
         return false;
     };
-    match (std::fs::canonicalize(parent), std::fs::canonicalize(&font_dir)) {
+    match (
+        std::fs::canonicalize(parent),
+        std::fs::canonicalize(&font_dir),
+    ) {
         (Ok(parent), Ok(font_dir)) => parent == font_dir,
         // Without both real directories there is nothing safe to compare, and nothing to delete.
         _ => false,

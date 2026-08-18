@@ -154,8 +154,10 @@ describe('applyVersion', () => {
 		expect(JSON.parse(readFixture(root, 'package.json')).version).toBe('0.2.0');
 		expect(JSON.parse(readFixture(root, 'src-tauri/tauri.conf.json')).version).toBe('0.2.0');
 		expect(readFixture(root, 'src-tauri/Cargo.toml')).toContain('version = "0.2.0"');
-		expect(readFixture(root, 'src-tauri/Cargo.lock')).toContain(
-			'name = "fontnest"\nversion = "0.2.0"'
+		// Tolerant of line endings on purpose: a Windows checkout hands the lock back with CRLF,
+		// and the rewrite matches either.
+		expect(readFixture(root, 'src-tauri/Cargo.lock')).toMatch(
+			/name = "fontnest"\r?\nversion = "0\.2\.0"/
 		);
 
 		// The changelog is the one file it does not touch, so the check still fails until the

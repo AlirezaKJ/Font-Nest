@@ -1,18 +1,22 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_map};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use fontdb::{Database, FaceInfo, ID, Source, Style};
-use sha1::{Digest, Sha1};
 
 use crate::dto::{
     FontCatalogue, FontFaceInspection, FontFaceSummary, FontFamilySummary, FontGlyphOutline,
     FontGlyphVariationValue, FontOrigin,
 };
+use crate::font_identity::{
+    FileIdentity, FileIdentityCache, IdentityKey, face_identity_key, family_identity_key,
+    normalize_family_name,
+};
 use crate::font_inspection::{self, FontInspectionError};
 use crate::font_origin;
 use crate::font_variations;
+use crate::managed_installations::ManagedInstallationRepository;
 
 /// Largest font file read back out of the catalogue for a long-running inspection.
 const MAX_FACE_BYTES: u64 = 64 * 1024 * 1024;
@@ -173,9 +177,9 @@ struct FontFamily {
 }
 
 impl FontFamily {
-    fn new(name: String) -> Self {
+    fn new(id: String, name: String) -> Self {
         Self {
-            id: family_id(&name),
+            id,
             name,
             faces: Vec::new(),
             files: BTreeSet::new(),
@@ -189,40 +193,38 @@ impl FontFamily {
         }
     }
 
-    fn add_face(&mut self, face: &FaceInfo) -> String {
-        let (origin, file_name, file_key, format) = face_file_details(face, &self.name);
+    fn add_face(&mut self, scanned: &ScannedFace<'_>, face_id: String) {
+        let face = scanned.face;
         let variable = face_is_variable(face);
         let style = style_value(face.style);
         let style_name = style_name(face.weight.0, face.style);
         let signature = format!("{}:{style}", face.weight.0);
-        let face_id = opaque_face_id(&file_key, face.index, &face.post_script_name);
 
-        self.files.insert(file_key.clone());
+        self.files.insert(scanned.file_key.clone());
         self.styles.insert(style_name.clone());
         self.weights.insert(face.weight.0);
-        self.formats.insert(format.clone());
-        self.origins.insert(origin);
+        self.formats.insert(scanned.format.clone());
+        self.origins.insert(scanned.origin);
         self.signatures
             .entry(signature)
             .or_default()
-            .insert(file_key.clone());
+            .insert(scanned.file_key.clone());
         self.monospaced &= face.monospaced;
         self.variable |= variable;
 
         self.faces.push(FontFaceSummary {
-            id: face_id.clone(),
+            id: face_id,
             post_script_name: face.post_script_name.clone(),
             style_name,
             style: style.to_owned(),
             weight: face.weight.0,
-            format,
-            origin,
-            file_name,
+            format: scanned.format.clone(),
+            origin: scanned.origin,
+            file_name: scanned.file_name.clone(),
             face_index: face.index,
             monospaced: face.monospaced,
             variable,
         });
-        face_id
     }
 
     fn finish(mut self) -> FontFamilySummary {
@@ -255,32 +257,34 @@ impl FontFamily {
     }
 }
 
-pub fn scan_installed_fonts() -> ScannedFontCatalogue {
+/// One face as the scan found it, with everything its identity and its summary need.
+struct ScannedFace<'a> {
+    face: &'a FaceInfo,
+    /// The family name as the font spells it, trimmed but not otherwise altered.
+    family_name: String,
+    origin: FontOrigin,
+    file_name: String,
+    /// The face's source as a comparable string. It names a file rather than identifying one, so
+    /// it is used for grouping and conflict evidence and never for an ID.
+    file_key: String,
+    format: String,
+}
+
+/// Scans every font installed on this computer.
+///
+/// `ledger` is the store that remembers which ID belongs to which font. It is optional because
+/// the catalogue must still work when the session is in read-only recovery: IDs are derived from
+/// each font's own identity, so a session without the ledger produces the same IDs, it just
+/// cannot learn about a rename the ledger had already recorded.
+pub fn scan_installed_fonts(
+    ledger: Option<&ManagedInstallationRepository>,
+) -> ScannedFontCatalogue {
     let started = Instant::now();
     let mut database = Database::new();
     database.load_system_fonts();
 
     let face_count = count(database.len());
-    let mut families = BTreeMap::<String, FontFamily>::new();
-    let mut face_ids = BTreeMap::new();
-
-    for face in database.faces() {
-        let Some((name, _language)) = face.families.first() else {
-            continue;
-        };
-        let name = name.trim();
-        if name.is_empty() {
-            continue;
-        }
-
-        let face_id = families
-            .entry(name.to_lowercase())
-            .or_insert_with(|| FontFamily::new(name.to_owned()))
-            .add_face(face);
-        face_ids.insert(face_id, face.id);
-    }
-
-    let families: Vec<_> = families.into_values().map(FontFamily::finish).collect();
+    let (families, face_ids) = build_families(&database, ledger);
     let conflict_count = count(families.iter().filter(|family| family.has_conflict).count());
 
     ScannedFontCatalogue {
@@ -298,19 +302,130 @@ pub fn scan_installed_fonts() -> ScannedFontCatalogue {
     }
 }
 
-fn opaque_face_id(file_key: &str, face_index: u32, post_script_name: &str) -> String {
-    use std::fmt::Write;
+/// Groups the scanned faces into families and gives both an ID.
+///
+/// Identity is settled before any summary is built, because an ID can depend on what the ledger
+/// already knows and on which faces the scan has already seen. The faces are put in a fixed order
+/// first, so both answers come out the same on every run over the same library.
+fn build_families(
+    database: &Database,
+    ledger: Option<&ManagedInstallationRepository>,
+) -> (Vec<FontFamilySummary>, BTreeMap<String, ID>) {
+    let mut scanned: Vec<ScannedFace<'_>> = database.faces().filter_map(ScannedFace::new).collect();
+    scanned.sort_by(|left, right| {
+        left.file_key
+            .cmp(&right.file_key)
+            .then_with(|| left.face.index.cmp(&right.face.index))
+            .then_with(|| left.face.post_script_name.cmp(&right.face.post_script_name))
+    });
 
-    let mut digest = Sha1::new();
-    digest.update(file_key.as_bytes());
-    digest.update(face_index.to_be_bytes());
-    digest.update(post_script_name.as_bytes());
-    let mut face_id = String::with_capacity("face:".len() + 40);
-    face_id.push_str("face:");
-    for byte in digest.finalize() {
-        let _ = write!(face_id, "{byte:02x}");
+    let mut file_identities = FileIdentityCache::default();
+    let mut keys = Vec::with_capacity(scanned.len() * 2);
+    let mut claimed = HashSet::with_capacity(scanned.len());
+    let mut family_keys = BTreeMap::<String, IdentityKey>::new();
+    let mut face_keys = Vec::with_capacity(scanned.len());
+
+    for entry in &scanned {
+        if let btree_map::Entry::Vacant(slot) =
+            family_keys.entry(normalize_family_name(&entry.family_name))
+        {
+            let key = family_identity_key(&entry.family_name);
+            keys.push(key.clone());
+            slot.insert(key);
+        }
+
+        let file = entry.file_identity(&mut file_identities);
+        let mut key = face_identity_key(&file, entry.face.index, &entry.face.post_script_name);
+        // Two faces answering to one identity would silently become one row. Platform file
+        // identities make that impossible; the path fallback cannot promise it, so a repeat moves
+        // onto a key of its own rather than overwrite the face already there.
+        for ordinal in 1.. {
+            if claimed.insert(key.key().to_owned()) {
+                break;
+            }
+            key = key.disambiguated(ordinal);
+        }
+        keys.push(key.clone());
+        face_keys.push(key);
     }
-    face_id
+
+    let resolved = resolve_identities(ledger, &keys);
+    let mut families = BTreeMap::<String, FontFamily>::new();
+    let mut face_ids = BTreeMap::new();
+
+    for (entry, key) in scanned.iter().zip(face_keys) {
+        let grouping = normalize_family_name(&entry.family_name);
+        let family_id = family_keys
+            .get(&grouping)
+            .map(|family_key| identity(&resolved, family_key))
+            .expect("every scanned family was keyed in the first pass");
+        let face_id = identity(&resolved, &key);
+
+        families
+            .entry(grouping)
+            .or_insert_with(|| FontFamily::new(family_id, entry.family_name.clone()))
+            .add_face(entry, face_id.clone());
+        face_ids.insert(face_id, entry.face.id);
+    }
+
+    (
+        families.into_values().map(FontFamily::finish).collect(),
+        face_ids,
+    )
+}
+
+/// Asks the ledger which IDs these identities already carry. A ledger that cannot be read is not
+/// fatal: every identity falls back to the ID it derives, which is the ID the ledger would have
+/// stored for a font it is meeting for the first time.
+fn resolve_identities(
+    ledger: Option<&ManagedInstallationRepository>,
+    keys: &[IdentityKey],
+) -> HashMap<String, String> {
+    let Some(ledger) = ledger else {
+        return HashMap::new();
+    };
+    ledger.resolve_font_identities(keys).unwrap_or_else(|error| {
+        log::error!(
+            "Font identities could not be read from the ledger, so this scan is using derived IDs: {error}"
+        );
+        HashMap::new()
+    })
+}
+
+fn identity(resolved: &HashMap<String, String>, key: &IdentityKey) -> String {
+    resolved
+        .get(key.key())
+        .cloned()
+        .unwrap_or_else(|| key.derived_id().to_owned())
+}
+
+impl<'a> ScannedFace<'a> {
+    fn new(face: &'a FaceInfo) -> Option<Self> {
+        let (name, _language) = face.families.first()?;
+        let family_name = name.trim();
+        if family_name.is_empty() {
+            return None;
+        }
+
+        let (origin, file_name, file_key, format) = face_file_details(face, family_name);
+        Some(Self {
+            face,
+            family_name: family_name.to_owned(),
+            origin,
+            file_name,
+            file_key,
+            format,
+        })
+    }
+
+    /// What the filesystem calls this face's file. A face `fontdb` holds in memory has no file, so
+    /// its identity is the font itself.
+    fn file_identity(&self, cache: &mut FileIdentityCache) -> FileIdentity {
+        match &self.face.source {
+            Source::File(path) => cache.identify(path),
+            _ => FileIdentity::Embedded,
+        }
+    }
 }
 
 /// Only file-backed faces can be checked; fontdb's in-memory sources have no path to read.
@@ -392,10 +507,6 @@ fn style_name(weight: u16, style: Style) -> String {
     }
 }
 
-fn family_id(name: &str) -> String {
-    name.trim().to_lowercase()
-}
-
 fn count(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
@@ -406,7 +517,7 @@ mod tests {
 
     use fontdb::Style;
 
-    use super::{family_id, format_label, opaque_face_id, style_name};
+    use super::{format_label, style_name};
 
     /// The preview pipeline the `preview_font_face` command runs, minus Tauri: resolve the
     /// scanned face, read it, lift it out of its collection, and check that what comes back
@@ -417,7 +528,7 @@ mod tests {
     fn collection_backed_faces_resolve_to_themselves_for_preview() {
         use crate::local_fonts;
 
-        let scanned = super::scan_installed_fonts();
+        let scanned = super::scan_installed_fonts(None);
         let collection_faces: Vec<_> = scanned
             .catalogue
             .families
@@ -457,11 +568,6 @@ mod tests {
     }
 
     #[test]
-    fn family_ids_are_normalized_for_selection() {
-        assert_eq!(family_id("  Source Serif 4 "), "source serif 4");
-    }
-
-    #[test]
     fn style_names_combine_weight_and_posture() {
         assert_eq!(style_name(400, Style::Italic), "Italic");
         assert_eq!(style_name(700, Style::Italic), "Bold Italic");
@@ -479,15 +585,99 @@ mod tests {
         );
     }
 
+    /// The catalogue's own guarantee, on this machine's real fonts: every face and every family
+    /// carries a well-formed opaque ID, and no two of them share one. A repeated ID is not a
+    /// cosmetic problem, it silently drops a face from the catalogue and from the interface.
+    #[cfg(target_os = "windows")]
     #[test]
-    fn opaque_face_ids_are_stable_and_do_not_expose_source_paths() {
-        let path = "C:\\Windows\\Fonts\\arial.ttf";
-        let id = opaque_face_id(path, 0, "ArialMT");
+    fn every_scanned_id_is_opaque_and_unique() {
+        use std::collections::HashSet;
 
-        assert_eq!(id, opaque_face_id(path, 0, "ArialMT"));
-        assert_ne!(id, opaque_face_id(path, 1, "ArialMT"));
-        assert!(id.starts_with("face:"));
-        assert!(!id.contains("Windows"));
-        assert!(!id.contains("Arial"));
+        use crate::font_identity::{IdentityKind, is_well_formed};
+
+        let scanned = super::scan_installed_fonts(None);
+        let mut ids = HashSet::new();
+
+        for family in &scanned.catalogue.families {
+            assert!(
+                is_well_formed(IdentityKind::Family, &family.id),
+                "{} has a malformed family ID: {}",
+                family.name,
+                family.id
+            );
+            assert!(ids.insert(family.id.clone()), "duplicate ID {}", family.id);
+
+            for face in &family.faces {
+                assert!(
+                    is_well_formed(IdentityKind::Face, &face.id),
+                    "{} has a malformed face ID: {}",
+                    face.post_script_name,
+                    face.id
+                );
+                assert!(ids.insert(face.id.clone()), "duplicate ID {}", face.id);
+            }
+        }
+    }
+
+    /// Going through the ledger must not change what anything is called, and it must leave a row
+    /// behind for every family and face, because that record is what a later rename will read.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_ledger_backed_scan_agrees_with_a_ledger_free_one_and_records_what_it_saw() {
+        use crate::managed_installations::ManagedInstallationRepository;
+
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let ledger = ManagedInstallationRepository::in_app_data_dir(temp.path());
+        ledger.initialize().expect("the migrations");
+
+        let without = super::scan_installed_fonts(None).catalogue;
+        let with = super::scan_installed_fonts(Some(&ledger)).catalogue;
+
+        let ids = |catalogue: &crate::dto::FontCatalogue| {
+            catalogue
+                .families
+                .iter()
+                .flat_map(|family| {
+                    std::iter::once(family.id.clone())
+                        .chain(family.faces.iter().map(|face| face.id.clone()))
+                })
+                .collect::<Vec<String>>()
+        };
+        let expected = ids(&without);
+        assert_eq!(expected, ids(&with));
+
+        let connection = rusqlite::Connection::open(temp.path().join("fontnest.sqlite3"))
+            .expect("the ledger opens");
+        let recorded: i64 = connection
+            .query_row("SELECT COUNT(*) FROM font_identities", [], |row| row.get(0))
+            .expect("the identities are counted");
+        assert_eq!(
+            usize::try_from(recorded).expect("a small count"),
+            expected.len()
+        );
+    }
+
+    /// Scanning the same library twice must name everything the same way, or a pinned family and
+    /// a saved preview would stop matching after a restart.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn two_scans_of_one_library_agree_on_every_id() {
+        let first = super::scan_installed_fonts(None).catalogue;
+        let second = super::scan_installed_fonts(None).catalogue;
+
+        let names = |catalogue: &crate::dto::FontCatalogue| {
+            catalogue
+                .families
+                .iter()
+                .map(|family| {
+                    (
+                        family.id.clone(),
+                        family.faces.iter().map(|face| face.id.clone()).collect(),
+                    )
+                })
+                .collect::<Vec<(String, Vec<String>)>>()
+        };
+
+        assert_eq!(names(&first), names(&second));
     }
 }

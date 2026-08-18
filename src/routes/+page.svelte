@@ -65,6 +65,9 @@
 	const UPDATE_CHECK_DELAY_MS = 8_000;
 	const PREFERENCES_KEY = 'fontnest.preferences.v1';
 	const PREFERENCES_SAVE_DELAY_MS = 400;
+	// Saved family IDs from before opaque IDs shipped can never match a family again, so they are
+	// dropped on load rather than carried forever in the preference blob.
+	const FAMILY_ID_PATTERN = /^family:[0-9a-f]{32}$/;
 
 	const SPACING_OPTIONS: DiscoverFilterOption[] = [
 		{ value: 'all', label: 'Any spacing' },
@@ -357,7 +360,8 @@
 				pinnedFamilyIds = [
 					...new Set(
 						saved.pinnedFamilyIds.filter(
-							(value): value is string => typeof value === 'string'
+							(value): value is string =>
+								typeof value === 'string' && FAMILY_ID_PATTERN.test(value)
 						)
 					)
 				];
