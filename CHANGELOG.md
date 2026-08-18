@@ -21,8 +21,17 @@ a bundled copy when you are offline.
   The same happens when a second FontNest is already running, so two copies can never install or
   remove fonts at the same time.
 
+- Parser JSON is now a capped sample of a face instead of a full dump. It carries up to a few
+  thousand glyphs and Unicode mappings, tells you how many the face actually has, and lists the
+  totals under `limits` in the snapshot itself. Copy JSON still gives you the whole thing.
+
 ### Fixed
 
+- Opening Parser JSON on a big font, a CJK family for instance, used to hang FontNest while it
+  built one enormous document, and every other font action queued up behind it. The snapshot now
+  arrives in pieces with a progress readout, the rest of the app stays responsive while it loads,
+  and closing the panel or moving to another face stops the work rather than finishing something
+  nobody is waiting for.
 - The preview size slider now goes all the way down. Anything you set below 40px used to draw at
   40px anyway, so the readout said one thing and the specimen showed another.
 

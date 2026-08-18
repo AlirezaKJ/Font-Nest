@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use fontdb::{Database, FaceInfo, ID, Source, Style};
@@ -7,11 +8,14 @@ use sha1::{Digest, Sha1};
 
 use crate::dto::{
     FontCatalogue, FontFaceInspection, FontFaceSummary, FontFamilySummary, FontGlyphOutline,
-    FontGlyphVariationValue, FontOrigin, FontParserJsonExport,
+    FontGlyphVariationValue, FontOrigin,
 };
 use crate::font_inspection::{self, FontInspectionError};
 use crate::font_origin;
 use crate::font_variations;
+
+/// Largest font file read back out of the catalogue for a long-running inspection.
+const MAX_FACE_BYTES: u64 = 64 * 1024 * 1024;
 
 pub struct ScannedFontCatalogue {
     pub catalogue: FontCatalogue,
@@ -35,6 +39,47 @@ pub enum CatalogueInspectionError {
     Parser(#[from] FontInspectionError),
 }
 
+/// The bytes of one scanned face, held without borrowing the catalogue.
+///
+/// A memory-mapped or in-memory source is shared by reference count; a plain file is read
+/// back from disk under a size cap. Either way the caller owns the bytes, so long parses
+/// run with no catalogue lock held.
+pub enum FaceBytes {
+    Owned(Vec<u8>),
+    Shared(Arc<dyn AsRef<[u8]> + Send + Sync>),
+}
+
+impl FaceBytes {
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Owned(bytes) => bytes,
+            Self::Shared(shared) => (**shared).as_ref(),
+        }
+    }
+}
+
+/// Loads the bytes for a face source that was cloned out of the catalogue.
+///
+/// This deliberately takes a `Source` rather than a store reference: resolving the source
+/// is a short locked lookup, and reading and parsing then happen with the lock released.
+pub fn read_face_bytes(source: &Source) -> Result<FaceBytes, CatalogueInspectionError> {
+    match source {
+        Source::Binary(shared) | Source::SharedFile(_, shared) => {
+            Ok(FaceBytes::Shared(Arc::clone(shared)))
+        }
+        Source::File(path) => {
+            let metadata =
+                std::fs::metadata(path).map_err(|_| CatalogueInspectionError::DataUnavailable)?;
+            if !metadata.is_file() || metadata.len() > MAX_FACE_BYTES {
+                return Err(CatalogueInspectionError::DataUnavailable);
+            }
+            std::fs::read(path)
+                .map(FaceBytes::Owned)
+                .map_err(|_| CatalogueInspectionError::DataUnavailable)
+        }
+    }
+}
+
 impl FontCatalogueStore {
     pub fn inspect_face(
         &self,
@@ -45,13 +90,22 @@ impl FontCatalogueStore {
         })
     }
 
-    pub fn export_face_json(
-        &self,
-        face_id: &str,
-    ) -> Result<FontParserJsonExport, CatalogueInspectionError> {
-        self.with_face_data(face_id, |data, index| {
-            font_inspection::export_face_json(face_id, data, index)
-        })
+    /// Clones the source and face index behind an opaque face ID.
+    ///
+    /// Cloning a `Source` is a path clone or a reference-count bump, so the catalogue lock
+    /// is held only for the lookup. Reading the bytes and parsing them happen afterwards,
+    /// which is what keeps a large export from blocking every other font command.
+    pub fn face_source(&self, face_id: &str) -> Result<(Source, u32), CatalogueInspectionError> {
+        let database_id = self
+            .faces
+            .get(face_id)
+            .copied()
+            .ok_or(CatalogueInspectionError::UnknownFace)?;
+        let face = self
+            .database
+            .face(database_id)
+            .ok_or(CatalogueInspectionError::UnknownFace)?;
+        Ok((face.source.clone(), face.index))
     }
 
     pub fn inspect_glyph_outline(

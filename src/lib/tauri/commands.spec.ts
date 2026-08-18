@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+	cancelFontFaceParserExport,
 	checkForAppUpdate,
 	exportFontFaceParserJson,
 	getGoogleFontDetails,
@@ -47,11 +48,10 @@ describe('font face parser commands', () => {
 		vi.mocked(invoke).mockReset();
 	});
 
-	it('inspects faces, glyph outlines, and exports through opaque IDs', async () => {
+	it('inspects faces and glyph outlines through opaque IDs', async () => {
 		const faceId = 'face:0123456789abcdef0123456789abcdef01234567';
 		vi.mocked(invoke).mockResolvedValueOnce({ faceId, metrics: { unitsPerEm: 1000 } });
 		vi.mocked(invoke).mockResolvedValueOnce({ faceId, codepoint: 65, pathData: 'M0 0' });
-		vi.mocked(invoke).mockResolvedValueOnce({ faceId, rawJson: '{}' });
 
 		await inspectFontFace(faceId);
 		await inspectFontGlyphOutline({
@@ -59,7 +59,6 @@ describe('font face parser commands', () => {
 			codepoint: 65,
 			variations: [{ tag: 'wght', value: 650 }]
 		});
-		await exportFontFaceParserJson(faceId);
 
 		expect(invoke).toHaveBeenNthCalledWith(1, 'inspect_font_face', { faceId });
 		expect(invoke).toHaveBeenNthCalledWith(2, 'inspect_font_glyph_outline', {
@@ -69,7 +68,40 @@ describe('font face parser commands', () => {
 				variations: [{ tag: 'wght', value: 650 }]
 			}
 		});
-		expect(invoke).toHaveBeenNthCalledWith(3, 'export_font_face_parser_json', { faceId });
+	});
+
+	it('streams a parser snapshot as chunks over a channel', async () => {
+		const faceId = 'face:0123456789abcdef0123456789abcdef01234567';
+		const events: unknown[] = [];
+		vi.mocked(invoke).mockImplementation(async (_command, args) => {
+			const channel = (args as { onEvent: { onmessage: (message: unknown) => void } })
+				.onEvent;
+			channel.onmessage({ event: 'chunk', data: { index: 0, text: '{"parser"' } });
+			channel.onmessage({ event: 'finished' });
+		});
+
+		await exportFontFaceParserJson({ faceId, exportId: 'export-1' }, (event) =>
+			events.push(event)
+		);
+
+		expect(invoke).toHaveBeenCalledWith('export_font_face_parser_json', {
+			request: { faceId, exportId: 'export-1' },
+			onEvent: expect.anything()
+		});
+		expect(events).toEqual([
+			{ event: 'chunk', data: { index: 0, text: '{"parser"' } },
+			{ event: 'finished' }
+		]);
+	});
+
+	it('cancels a running export by its ID', async () => {
+		vi.mocked(invoke).mockResolvedValue(undefined);
+
+		await cancelFontFaceParserExport('export-1');
+
+		expect(invoke).toHaveBeenCalledWith('cancel_font_face_parser_export', {
+			exportId: 'export-1'
+		});
 	});
 });
 

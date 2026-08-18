@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -8,11 +10,25 @@ use ttf_parser::{Face, GlyphId, OutlineBuilder, Rect, Tag, name_id};
 use crate::dto::{
     FontEmbeddingProperties, FontFaceInspection, FontFaceMetrics, FontFaceNames,
     FontFaceProperties, FontGlyphBounds, FontGlyphOutline, FontGlyphOutlineHandle,
-    FontGlyphOutlinePoint, FontGlyphVariationValue, FontParserJsonExport, FontVariationAxis,
+    FontGlyphOutlinePoint, FontGlyphVariationValue, FontParserJsonSection, FontVariationAxis,
 };
 
 pub const PARSER_NAME: &str = "ttf-parser";
 pub const PARSER_VERSION: &str = "0.25.1";
+
+/// Most Unicode mappings written into a parser snapshot.
+const MAX_UNICODE_MAPPINGS: usize = 4096;
+/// Most glyph records written into a parser snapshot.
+const MAX_GLYPH_ENTRIES: usize = 4096;
+/// Most collapsed codepoint ranges written into a parser snapshot.
+const MAX_CODEPOINT_RANGES: usize = 2048;
+/// Most table records written into a parser snapshot.
+const MAX_TABLE_RECORDS: usize = 1024;
+/// Ceiling on the serialized snapshot. A document over this size is rebuilt without its
+/// per-glyph and per-codepoint arrays; the string is never cut, so it stays valid JSON.
+const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
+/// How often the long loops look at the cancellation flag.
+const CANCEL_CHECK_INTERVAL: usize = 512;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FontInspectionError {
@@ -24,6 +40,46 @@ pub enum FontInspectionError {
     InvalidCodepoint,
     #[error("the selected font does not map that character to a glyph")]
     MissingGlyph,
+    #[error("the export was cancelled")]
+    Cancelled,
+}
+
+/// Cooperative cancellation for a parser export.
+///
+/// Exporting a large CJK or colour font walks tens of thousands of glyphs, so the work has
+/// to be abandonable: the command layer flips this flag when the user closes the panel or
+/// moves to another face, and the builder gives up at the next checkpoint instead of
+/// finishing a snapshot nobody is waiting for.
+#[derive(Debug, Default, Clone)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn check(&self) -> Result<(), FontInspectionError> {
+        if self.is_cancelled() {
+            Err(FontInspectionError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// A bounded parser snapshot plus an honest account of what it left out.
+#[derive(Debug)]
+pub struct ParserJsonSnapshot {
+    pub json: String,
+    /// True when any section was capped, so the interface can say so rather than implying
+    /// the snapshot is the whole font.
+    pub truncated: bool,
+    pub unicode_mappings: FontParserJsonSection,
+    pub glyphs: FontParserJsonSection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -57,48 +113,161 @@ pub fn inspect_face(
     })
 }
 
+/// Builds a bounded parser snapshot for one face.
+///
+/// Every heavy section is capped and every cap is reported, so a 65,000-glyph CJK face
+/// produces a document of the same order of magnitude as a 200-glyph text face instead of
+/// tens of megabytes. `cancel` is checked between sections and inside the long loops.
 pub fn export_face_json(
-    face_id: &str,
     data: &[u8],
     face_index: u32,
-) -> Result<FontParserJsonExport, FontInspectionError> {
+    cancel: &CancelToken,
+) -> Result<ParserJsonSnapshot, FontInspectionError> {
     let face = Face::parse(data, face_index).map_err(|_| FontInspectionError::Parse)?;
+    cancel.check()?;
+
     let codepoints = unicode_codepoints(&face);
-    let glyph_codepoints = glyph_codepoints(&face, &codepoints);
+    cancel.check()?;
+    let mappings = unicode_mappings_json(&face, &codepoints, cancel)?;
+    let glyph_codepoints = glyph_codepoints(&face, &codepoints, cancel)?;
+    let glyph_records = glyphs_json(&face, &glyph_codepoints, cancel)?;
+    cancel.check()?;
+
+    let ranges = codepoint_ranges(&codepoints);
+    let range_total = ranges.len();
+    let ranges: Vec<String> = ranges.into_iter().take(MAX_CODEPOINT_RANGES).collect();
+
     let tables = table_directory(data, face_index).ok_or(FontInspectionError::Parse)?;
-    let snapshot = json!({
+    let table_total = tables.len();
+    let tables: Vec<TableRecord> = tables.into_iter().take(MAX_TABLE_RECORDS).collect();
+    cancel.check()?;
+
+    let unicode_mappings = section(mappings.len(), codepoints.len());
+    let glyphs = section(glyph_records.len(), usize::from(face.number_of_glyphs()));
+    let mut truncated = unicode_mappings.included < unicode_mappings.total
+        || glyphs.included < glyphs.total
+        || ranges.len() < range_total
+        || tables.len() < table_total;
+
+    let mut json = serde_json::to_string_pretty(&snapshot_document(
+        &face,
+        data.len(),
+        face_index,
+        &tables,
+        section(tables.len(), table_total),
+        &codepoints,
+        &ranges,
+        section(ranges.len(), range_total),
+        &mappings,
+        unicode_mappings,
+        &glyph_records,
+        glyphs,
+        truncated,
+    ))?;
+
+    // Last line of defence: the caps above bound the entry counts, not the bytes a single
+    // entry costs. If a pathological face still serializes past the ceiling, drop the two
+    // per-entry arrays and rebuild rather than handing back a cut, unparseable string.
+    if json.len() > MAX_JSON_BYTES {
+        cancel.check()?;
+        truncated = true;
+        let dropped_mappings = FontParserJsonSection {
+            included: 0,
+            total: unicode_mappings.total,
+        };
+        let dropped_glyphs = FontParserJsonSection {
+            included: 0,
+            total: glyphs.total,
+        };
+        json = serde_json::to_string_pretty(&snapshot_document(
+            &face,
+            data.len(),
+            face_index,
+            &tables,
+            section(tables.len(), table_total),
+            &codepoints,
+            &ranges,
+            section(ranges.len(), range_total),
+            &[],
+            dropped_mappings,
+            &[],
+            dropped_glyphs,
+            truncated,
+        ))?;
+        return Ok(ParserJsonSnapshot {
+            json,
+            truncated,
+            unicode_mappings: dropped_mappings,
+            glyphs: dropped_glyphs,
+        });
+    }
+
+    Ok(ParserJsonSnapshot {
+        json,
+        truncated,
+        unicode_mappings,
+        glyphs,
+    })
+}
+
+#[allow(clippy::too_many_arguments)] // One flat document builder; splitting it would only move the arguments.
+fn snapshot_document(
+    face: &Face<'_>,
+    data_length: usize,
+    face_index: u32,
+    tables: &[TableRecord],
+    table_section: FontParserJsonSection,
+    codepoints: &[u32],
+    ranges: &[String],
+    range_section: FontParserJsonSection,
+    mappings: &[Value],
+    mapping_section: FontParserJsonSection,
+    glyphs: &[Value],
+    glyph_section: FontParserJsonSection,
+    truncated: bool,
+) -> Value {
+    json!({
         "parser": {
             "name": PARSER_NAME,
             "version": PARSER_VERSION,
         },
         "faceIndex": face_index,
-        "dataLength": data.len(),
-        "properties": face_properties(&face),
-        "metrics": metrics_json(&face),
-        "names": names_json(&face),
-        "variationAxes": variation_axes_json(&face),
+        "dataLength": data_length,
+        "truncated": truncated,
+        "limits": {
+            "unicodeMappings": section_json(mapping_section),
+            "glyphs": section_json(glyph_section),
+            "codepointRanges": section_json(range_section),
+            "tables": section_json(table_section),
+        },
+        "properties": face_properties(face),
+        "metrics": metrics_json(face),
+        "names": names_json(face),
+        "variationAxes": variation_axes_json(face),
         "tables": tables,
         "unicode": {
             "codepointCount": codepoints.len(),
-            "ranges": codepoint_ranges(&codepoints),
-            "mappings": unicode_mappings_json(&face, &codepoints),
+            "ranges": ranges,
+            "mappings": mappings,
         },
-        "glyphs": glyphs_json(&face, &glyph_codepoints),
+        "glyphs": glyphs,
         "notes": [
             "Values are a structured snapshot of ttf-parser output.",
             "Binary table payloads and glyph outlines are intentionally omitted; table offsets and lengths refer to the source font data.",
+            "Sections are capped; `limits` reports how many entries each one carries against the face total.",
         ],
-    });
-    let raw_json = serde_json::to_string_pretty(&snapshot)?;
-    let json_byte_length = u32::try_from(raw_json.len()).unwrap_or(u32::MAX);
-
-    Ok(FontParserJsonExport {
-        face_id: face_id.to_owned(),
-        parser_name: PARSER_NAME,
-        parser_version: PARSER_VERSION,
-        json_byte_length,
-        raw_json,
     })
+}
+
+fn section(included: usize, total: usize) -> FontParserJsonSection {
+    FontParserJsonSection {
+        included: u32::try_from(included).unwrap_or(u32::MAX),
+        total: u32::try_from(total).unwrap_or(u32::MAX),
+    }
+}
+
+fn section_json(section: FontParserJsonSection) -> Value {
+    json!({ "included": section.included, "total": section.total })
 }
 
 pub fn inspect_glyph_outline(
@@ -465,54 +634,88 @@ fn unicode_codepoints(face: &Face<'_>) -> Vec<u32> {
     codepoints.into_iter().collect()
 }
 
-fn glyph_codepoints(face: &Face<'_>, codepoints: &[u32]) -> BTreeMap<u16, Vec<String>> {
+/// Codepoints per glyph, for the glyph records only. Bounded by `MAX_GLYPH_ENTRIES` glyphs
+/// so a face that maps every codepoint to a distinct glyph cannot grow this without limit.
+fn glyph_codepoints(
+    face: &Face<'_>,
+    codepoints: &[u32],
+    cancel: &CancelToken,
+) -> Result<BTreeMap<u16, Vec<String>>, FontInspectionError> {
     let mut glyphs = BTreeMap::<u16, Vec<String>>::new();
-    for codepoint in codepoints {
+    for (index, codepoint) in codepoints.iter().enumerate() {
+        if index % CANCEL_CHECK_INTERVAL == 0 {
+            cancel.check()?;
+        }
         let Some(character) = char::from_u32(*codepoint) else {
             continue;
         };
         let Some(glyph) = face.glyph_index(character) else {
             continue;
         };
+        if usize::from(glyph.0) >= MAX_GLYPH_ENTRIES {
+            continue;
+        }
         glyphs
             .entry(glyph.0)
             .or_default()
             .push(format_codepoint(*codepoint));
     }
-    glyphs
+    Ok(glyphs)
 }
 
-fn unicode_mappings_json(face: &Face<'_>, codepoints: &[u32]) -> Vec<Value> {
-    codepoints
-        .iter()
-        .filter_map(|codepoint| {
-            let character = char::from_u32(*codepoint)?;
-            let glyph = face.glyph_index(character)?;
-            Some(json!({
-                "codepoint": format_codepoint(*codepoint),
-                "character": character.to_string(),
-                "glyphId": glyph.0,
-            }))
-        })
-        .collect()
+fn unicode_mappings_json(
+    face: &Face<'_>,
+    codepoints: &[u32],
+    cancel: &CancelToken,
+) -> Result<Vec<Value>, FontInspectionError> {
+    let mut mappings = Vec::with_capacity(codepoints.len().min(MAX_UNICODE_MAPPINGS));
+    for (index, codepoint) in codepoints.iter().enumerate() {
+        if mappings.len() >= MAX_UNICODE_MAPPINGS {
+            break;
+        }
+        if index % CANCEL_CHECK_INTERVAL == 0 {
+            cancel.check()?;
+        }
+        let Some(character) = char::from_u32(*codepoint) else {
+            continue;
+        };
+        let Some(glyph) = face.glyph_index(character) else {
+            continue;
+        };
+        mappings.push(json!({
+            "codepoint": format_codepoint(*codepoint),
+            "character": character.to_string(),
+            "glyphId": glyph.0,
+        }));
+    }
+    Ok(mappings)
 }
 
-fn glyphs_json(face: &Face<'_>, codepoints: &BTreeMap<u16, Vec<String>>) -> Vec<Value> {
-    (0..face.number_of_glyphs())
-        .map(|index| {
-            let glyph = GlyphId(index);
-            json!({
-                "id": index,
-                "name": face.glyph_name(glyph),
-                "codepoints": codepoints.get(&index).cloned().unwrap_or_default(),
-                "horizontalAdvance": face.glyph_hor_advance(glyph),
-                "horizontalSideBearing": face.glyph_hor_side_bearing(glyph),
-                "verticalAdvance": face.glyph_ver_advance(glyph),
-                "verticalSideBearing": face.glyph_ver_side_bearing(glyph),
-                "boundingBox": face.glyph_bounding_box(glyph).map(rect_json),
-            })
-        })
-        .collect()
+fn glyphs_json(
+    face: &Face<'_>,
+    codepoints: &BTreeMap<u16, Vec<String>>,
+    cancel: &CancelToken,
+) -> Result<Vec<Value>, FontInspectionError> {
+    let count = usize::from(face.number_of_glyphs()).min(MAX_GLYPH_ENTRIES);
+    let mut records = Vec::with_capacity(count);
+    for index in 0..count {
+        if index % CANCEL_CHECK_INTERVAL == 0 {
+            cancel.check()?;
+        }
+        let id = u16::try_from(index).unwrap_or(u16::MAX);
+        let glyph = GlyphId(id);
+        records.push(json!({
+            "id": id,
+            "name": face.glyph_name(glyph),
+            "codepoints": codepoints.get(&id).cloned().unwrap_or_default(),
+            "horizontalAdvance": face.glyph_hor_advance(glyph),
+            "horizontalSideBearing": face.glyph_hor_side_bearing(glyph),
+            "verticalAdvance": face.glyph_ver_advance(glyph),
+            "verticalSideBearing": face.glyph_ver_side_bearing(glyph),
+            "boundingBox": face.glyph_bounding_box(glyph).map(rect_json),
+        }));
+    }
+    Ok(records)
 }
 
 fn rect_json(rect: Rect) -> Value {
@@ -637,7 +840,8 @@ fn format_codepoint(codepoint: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        codepoint_ranges, export_face_json, inspect_face, inspect_glyph_outline, table_directory,
+        CancelToken, MAX_GLYPH_ENTRIES, MAX_UNICODE_MAPPINGS, codepoint_ranges, export_face_json,
+        inspect_face, inspect_glyph_outline, table_directory,
     };
 
     #[test]
@@ -672,6 +876,44 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    fn a_cancelled_export_stops_instead_of_finishing_the_snapshot() {
+        let data = std::fs::read(r"C:\Windows\Fonts\arial.ttf")
+            .expect("Arial is part of the supported Windows font set");
+        let cancel = CancelToken::default();
+        cancel.cancel();
+
+        let error = export_face_json(&data, 0, &cancel).expect_err("a cancelled export gives up");
+
+        assert!(matches!(error, super::FontInspectionError::Cancelled));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn parser_snapshot_sections_stay_within_their_caps_and_report_the_face_totals() {
+        // A large CJK face is the case the caps exist for: without them the snapshot grows
+        // with the font, which is what made this export an unbounded IPC payload.
+        let Ok(data) = std::fs::read(r"C:\Windows\Fonts\msyh.ttc") else {
+            return; // Microsoft YaHei is not on every supported Windows edition.
+        };
+        let snapshot =
+            export_face_json(&data, 0, &CancelToken::default()).expect("a bounded snapshot");
+        let document: serde_json::Value =
+            serde_json::from_str(&snapshot.json).expect("the capped snapshot is still valid JSON");
+
+        assert!(snapshot.truncated, "a CJK face exceeds the section caps");
+        assert!(snapshot.glyphs.total > snapshot.glyphs.included);
+        assert!(snapshot.glyphs.included as usize <= MAX_GLYPH_ENTRIES);
+        assert!(snapshot.unicode_mappings.included as usize <= MAX_UNICODE_MAPPINGS);
+        assert!(snapshot.json.len() <= super::MAX_JSON_BYTES);
+        assert_eq!(
+            document["limits"]["glyphs"]["total"].as_u64(),
+            Some(u64::from(snapshot.glyphs.total)),
+            "the document states what it left out"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn installed_true_type_face_exports_metrics_and_parser_json() {
         let data = std::fs::read(r"C:\Windows\Fonts\arial.ttf")
             .expect("Arial is part of the supported Windows font set");
@@ -679,9 +921,8 @@ mod tests {
         let inspection = inspect_face("face:test", &data, 0).expect("font metrics");
         let outline = inspect_glyph_outline("face:test", &data, 0, u32::from('B'), &[])
             .expect("glyph outline");
-        let exported = export_face_json("face:test", &data, 0).expect("parser JSON");
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&exported.raw_json).expect("valid JSON");
+        let exported = export_face_json(&data, 0, &CancelToken::default()).expect("parser JSON");
+        let snapshot: serde_json::Value = serde_json::from_str(&exported.json).expect("valid JSON");
 
         assert!(inspection.metrics.units_per_em > 0);
         assert!(inspection.metrics.capital_height.is_some());
@@ -714,6 +955,9 @@ mod tests {
                 .as_u64()
                 .is_some_and(|count| count > 0)
         );
-        assert_eq!(exported.json_byte_length as usize, exported.raw_json.len());
+        assert_eq!(
+            snapshot["limits"]["glyphs"]["included"].as_u64(),
+            Some(u64::from(exported.glyphs.included))
+        );
     }
 }

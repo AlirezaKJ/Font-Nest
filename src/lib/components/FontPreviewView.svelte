@@ -70,7 +70,6 @@
 	import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
 	import type { FontGlyphOutline } from '$lib/bindings/FontGlyphOutline';
 	import type { FontGlyphVariationValue } from '$lib/bindings/FontGlyphVariationValue';
-	import type { FontParserJsonExport } from '$lib/bindings/FontParserJsonExport';
 	import {
 		filterGlyphSetCodepoints,
 		formatCodepoint,
@@ -84,6 +83,15 @@
 	import { faceContextMenu, glyphContextMenu } from '$lib/context-menu/entries';
 	import { activateLocalFontPreview, releaseLocalFontPreview } from '$lib/fonts/local-fonts';
 	import {
+		PARSER_PREVIEW_CHARS,
+		applyParserJsonEvent,
+		parserExportProgress,
+		parserExportText,
+		parserExportTruncationNote,
+		type ParserExport
+	} from '$lib/fonts/parser-export';
+	import {
+		cancelFontFaceParserExport,
 		exportFontFaceParserJson,
 		fontFaceFilePath,
 		inspectFontFace,
@@ -147,10 +155,17 @@
 	let faceInspection = $state<FontFaceInspection | null>(null);
 	let inspectionLoading = $state(false);
 	let inspectionError = $state('');
-	let parserExport = $state<FontParserJsonExport | null>(null);
+	let parserExport = $state<ParserExport | null>(null);
 	let parserLoading = $state(false);
 	let parserError = $state('');
 	let parserCopyLabel = $state('Copy JSON');
+	// The export ID that is currently streaming, so it can be cancelled when the user
+	// leaves the panel or moves to another face instead of parsing on regardless.
+	let activeParserExportId: string | null = null;
+	const parserJsonText = $derived(parserExportText(parserExport));
+	const parserPreviewText = $derived(parserJsonText.slice(0, PARSER_PREVIEW_CHARS));
+	const parserTruncationNote = $derived(parserExportTruncationNote(parserExport));
+	const parserProgress = $derived(parserExportProgress(parserExport));
 	const glyphOutlineCache = new Map<string, FontGlyphOutline>();
 
 	let specimenEl = $state<HTMLElement>();
@@ -414,10 +429,16 @@
 		}
 	});
 
+	// Leaving the preview must not leave a parse running in the backend.
+	$effect(() => () => cancelActiveParserExport());
+
 	$effect(() => {
 		const faceId = selectedFace?.id;
 		faceInspection = null;
 		inspectionError = '';
+		// Abandon a snapshot still being built for the face we just left: it can be a long
+		// parse, and nothing is waiting for it any more.
+		cancelActiveParserExport();
 		parserExport = null;
 		parserError = '';
 		parserCopyLabel = 'Copy JSON';
@@ -657,6 +678,23 @@
 		return display === formatted ? formatted : `${display}, ${formatted}`;
 	}
 
+	function cancelActiveParserExport() {
+		const exportId = activeParserExportId;
+		if (!exportId) return;
+		activeParserExportId = null;
+		parserLoading = false;
+		// A half-streamed snapshot is not a document, so drop it rather than leaving
+		// truncated JSON on screen that the copy button would hand over as if it were whole.
+		if (parserExport && !parserExport.complete) parserExport = null;
+		if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
+		void cancelFontFaceParserExport(exportId).catch(() => undefined);
+	}
+
+	function newExportId(): string {
+		if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
+		return `export-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`;
+	}
+
 	async function loadParserJson() {
 		const faceId = selectedFace?.id;
 		if (!faceId || parserExport?.faceId === faceId || parserLoading) return;
@@ -665,22 +703,32 @@
 			return;
 		}
 
+		const exportId = newExportId();
+		activeParserExportId = exportId;
 		parserLoading = true;
 		parserError = '';
 		try {
-			const exported = await exportFontFaceParserJson(faceId);
-			if (selectedFace?.id === faceId) parserExport = exported;
+			await exportFontFaceParserJson({ faceId, exportId }, (event) => {
+				// A late message from an export the user already moved on from must not
+				// overwrite the snapshot now on screen.
+				if (activeParserExportId !== exportId) return;
+				parserExport = applyParserJsonEvent(parserExport, event);
+			});
 		} catch (error) {
-			parserError = commandErrorMessage(error);
+			if (activeParserExportId === exportId) parserError = commandErrorMessage(error);
 		} finally {
-			parserLoading = false;
+			if (activeParserExportId === exportId) {
+				activeParserExportId = null;
+				parserLoading = false;
+			}
 		}
 	}
 
 	async function copyParserJson() {
-		if (!parserExport) return;
+		const text = parserExportText(parserExport);
+		if (!text) return;
 		try {
-			await navigator.clipboard.writeText(parserExport.rawJson);
+			await navigator.clipboard.writeText(text);
 			parserCopyLabel = 'Copied';
 			window.setTimeout(() => (parserCopyLabel = 'Copy JSON'), 1600);
 		} catch {
@@ -1756,6 +1804,7 @@
 				<details
 					ontoggle={(event) => {
 						if (event.currentTarget.open) void loadParserJson();
+						else cancelActiveParserExport();
 					}}
 				>
 					<summary>
@@ -1770,30 +1819,47 @@
 					</summary>
 
 					<div class="parser-content">
-						{#if parserLoading}
-							<div class="parser-loading" aria-live="polite">
-								<span></span><span></span><span></span>
-								<p>Exporting tables, names, Unicode mappings, and glyph metrics…</p>
-							</div>
-						{:else if parserError}
+						{#if parserError}
 							<p class="parser-error">{parserError}</p>
 						{:else if parserExport}
 							<div class="parser-toolbar">
 								<p>
 									{parserExport.parserName}
 									{parserExport.parserVersion} ·
-									{formatBytes(parserExport.jsonByteLength)}
+									{formatBytes(parserExport.totalBytes)}
+									{#if !parserExport.complete}
+										· receiving {Math.round(parserProgress * 100)}%
+									{/if}
 								</p>
-								<button type="button" onclick={copyParserJson}
-									>{parserCopyLabel}</button
+								<button
+									type="button"
+									onclick={copyParserJson}
+									disabled={!parserExport.complete}>{parserCopyLabel}</button
 								>
 							</div>
+							{#if parserTruncationNote}
+								<p class="parser-note">
+									{parserTruncationNote} Section totals are listed under
+									<code>limits</code> in the snapshot.
+								</p>
+							{/if}
 							<div
 								class="parser-json"
 								role="region"
 								aria-label="Raw font parser JSON"
 							>
-								<pre><code>{parserExport.rawJson}</code></pre>
+								<pre><code>{parserPreviewText}</code></pre>
+							</div>
+							{#if parserJsonText.length > parserPreviewText.length}
+								<p class="parser-note">
+									Showing the first {formatBytes(parserPreviewText.length)} here. Copy
+									JSON gives you the whole snapshot.
+								</p>
+							{/if}
+						{:else if parserLoading}
+							<div class="parser-loading" aria-live="polite">
+								<span></span><span></span><span></span>
+								<p>Exporting tables, names, Unicode mappings, and glyph metrics…</p>
 							</div>
 						{:else}
 							<button
@@ -3300,10 +3366,24 @@
 
 	.parser-toolbar p,
 	.parser-loading p,
+	.parser-note,
 	.parser-error {
 		margin: 0;
 		color: var(--color-muted);
 		font-size: var(--text-micro);
+	}
+
+	.parser-note {
+		margin-bottom: 10px;
+	}
+
+	.parser-json + .parser-note {
+		margin-top: 10px;
+		margin-bottom: 0;
+	}
+
+	.parser-note code {
+		font-family: var(--font-mono, ui-monospace, monospace);
 	}
 
 	.parser-toolbar button,
@@ -3322,9 +3402,14 @@
 		cursor: pointer;
 	}
 
-	.parser-toolbar button:hover,
+	.parser-toolbar button:hover:not(:disabled),
 	.load-parser-action:hover {
 		background: var(--color-selected);
+	}
+
+	.parser-toolbar button:disabled {
+		opacity: 0.55;
+		cursor: default;
 	}
 
 	.parser-json {

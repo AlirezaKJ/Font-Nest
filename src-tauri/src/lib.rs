@@ -22,6 +22,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::CatalogueState::default())
+        .manage(commands::ParserExports::default())
         .manage(local_fonts::PreviewStore::default())
         // Serves validated local-font bytes to the WebView by opaque handle only.
         // The registry never exposes a filesystem path, and an unknown or malformed
@@ -108,6 +109,7 @@ pub fn run() {
             commands::inspect_font_face,
             commands::inspect_font_glyph_outline,
             commands::export_font_face_parser_json,
+            commands::cancel_font_face_parser_export,
             commands::font_face_file_path,
             commands::reveal_font_face_file,
             commands::validate_font_file,

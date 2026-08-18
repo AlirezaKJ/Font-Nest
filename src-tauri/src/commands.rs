@@ -1,16 +1,18 @@
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
+use fontdb::Source;
 use tauri::{Manager, ipc::Channel};
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::catalogue::{self, CatalogueInspectionError, FontCatalogueStore};
 use crate::dto::{
     AppUpdateEvent, AppUpdateInfo, CommandError, FontCatalogue, FontFaceInspection,
-    FontGlyphOutline, FontGlyphOutlineRequest, FontParserJsonExport, GoogleFontFamilyDetails,
-    GoogleFontInstallResult, GoogleFontPage, GoogleFontPageRequest, GoogleFontPreview,
-    InstallGoogleFontRequest, ManagedStorageStatus, ValidatedLocalFont,
+    FontGlyphOutline, FontGlyphOutlineRequest, FontParserJsonEvent, FontParserJsonRequest,
+    GoogleFontFamilyDetails, GoogleFontInstallResult, GoogleFontPage, GoogleFontPageRequest,
+    GoogleFontPreview, InstallGoogleFontRequest, ManagedStorageStatus, ValidatedLocalFont,
 };
-use crate::font_inspection::FontInspectionError;
+use crate::font_inspection::{self, CancelToken, FontInspectionError, ParserJsonSnapshot};
 use crate::font_platform;
 use crate::google_fonts::{self, GoogleFontsError};
 use crate::local_fonts::{self, LocalFontError};
@@ -20,6 +22,13 @@ use crate::release_notes::{self, ReleaseNotesError};
 const FACE_ID_PREFIX: &str = "face:";
 const SHA1_HEX_LENGTH: usize = 40;
 const MAX_GLYPH_VARIATIONS: usize = 64;
+/// Longest caller-generated export ID accepted for a parser snapshot.
+const MAX_EXPORT_ID_LENGTH: usize = 64;
+/// Bytes per streamed parser-snapshot chunk. A snapshot crosses IPC in pieces this size
+/// rather than as one string, so a large document never becomes one oversized payload.
+const PARSER_JSON_CHUNK_BYTES: usize = 256 * 1024;
+/// Most parser exports allowed to run at once.
+const MAX_ACTIVE_PARSER_EXPORTS: usize = 8;
 
 #[derive(Default)]
 pub struct CatalogueState {
@@ -49,7 +58,11 @@ impl CatalogueState {
             .map_err(|error| map_catalogue_inspection_error(&error))
     }
 
-    fn export_face_json(&self, face_id: &str) -> Result<FontParserJsonExport, CommandError> {
+    /// Resolves a face to its source without keeping the catalogue locked for the parse.
+    ///
+    /// Cloning a `Source` is a path clone or a reference-count bump, so this guard is held
+    /// for a lookup rather than for the length of an export.
+    fn face_source(&self, face_id: &str) -> Result<(Source, u32), CommandError> {
         let current = self
             .store
             .lock()
@@ -58,7 +71,7 @@ impl CatalogueState {
             .as_ref()
             .ok_or_else(CommandError::catalogue_unavailable)?;
         store
-            .export_face_json(face_id)
+            .face_source(face_id)
             .map_err(|error| map_catalogue_inspection_error(&error))
     }
 
@@ -117,20 +130,191 @@ pub async fn inspect_font_face(
     .map_err(|_| CommandError::font_parser_unavailable())?
 }
 
+/// Cancellation tokens for the parser exports that are still running.
+///
+/// An export can walk tens of thousands of glyphs, so the user has to be able to abandon
+/// one: the frontend names each export and calls `cancel_font_face_parser_export` when it
+/// closes the panel or moves to another face.
+#[derive(Default, Clone)]
+pub struct ParserExports {
+    active: Arc<Mutex<HashMap<String, CancelToken>>>,
+}
+
+impl ParserExports {
+    fn begin(&self, export_id: &str) -> Result<CancelToken, CommandError> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| CommandError::font_parser_unavailable())?;
+        if active.contains_key(export_id) {
+            return Err(CommandError::invalid_parser_export_request());
+        }
+        if active.len() >= MAX_ACTIVE_PARSER_EXPORTS {
+            return Err(CommandError::too_many_parser_exports());
+        }
+        let token = CancelToken::default();
+        active.insert(export_id.to_owned(), token.clone());
+        Ok(token)
+    }
+
+    fn finish(&self, export_id: &str) {
+        if let Ok(mut active) = self.active.lock() {
+            active.remove(export_id);
+        }
+    }
+
+    fn cancel(&self, export_id: &str) {
+        if let Ok(active) = self.active.lock() {
+            if let Some(token) = active.get(export_id) {
+                token.cancel();
+            }
+        }
+    }
+}
+
+/// Keeps an export cancellable until its last chunk has been sent, then deregisters it.
+struct ActiveExport {
+    exports: ParserExports,
+    export_id: String,
+    token: CancelToken,
+}
+
+impl Drop for ActiveExport {
+    fn drop(&mut self) {
+        self.exports.finish(&self.export_id);
+    }
+}
+
+enum ParserExportFailure {
+    Cancelled,
+    Failed(CommandError),
+}
+
+/// Streams a bounded parser snapshot for one face.
+///
+/// The snapshot is built off the command thread with the catalogue lock released, capped
+/// section by section, and delivered as ordered chunks: `started`, then `chunk` messages,
+/// then `finished`. A cancelled export ends with `cancelled` and no further chunks.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
 pub async fn export_font_face_parser_json(
-    face_id: String,
+    request: FontParserJsonRequest,
+    on_event: Channel<FontParserJsonEvent>,
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-) -> Result<FontParserJsonExport, CommandError> {
+) -> Result<(), CommandError> {
     ensure_trusted_window(&window)?;
-    validate_face_id(&face_id)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        app.state::<CatalogueState>().export_face_json(&face_id)
+    validate_face_id(&request.face_id)?;
+    validate_export_id(&request.export_id)?;
+
+    let exports = (*app.state::<ParserExports>()).clone();
+    let token = exports.begin(&request.export_id)?;
+    let active = ActiveExport {
+        exports,
+        export_id: request.export_id.clone(),
+        token,
+    };
+
+    let face_id = request.face_id.clone();
+    let snapshot = {
+        let app = app.clone();
+        let token = active.token.clone();
+        tauri::async_runtime::spawn_blocking(move || build_parser_snapshot(&app, &face_id, &token))
+            .await
+            .map_err(|_| CommandError::font_parser_unavailable())?
+    };
+
+    let snapshot = match snapshot {
+        Ok(snapshot) => snapshot,
+        Err(ParserExportFailure::Cancelled) => {
+            let _ = on_event.send(FontParserJsonEvent::Cancelled);
+            return Ok(());
+        }
+        Err(ParserExportFailure::Failed(error)) => return Err(error),
+    };
+
+    let chunks = split_on_char_boundaries(&snapshot.json, PARSER_JSON_CHUNK_BYTES);
+    on_event
+        .send(FontParserJsonEvent::Started {
+            face_id: request.face_id,
+            parser_name: font_inspection::PARSER_NAME,
+            parser_version: font_inspection::PARSER_VERSION,
+            total_bytes: u32::try_from(snapshot.json.len()).unwrap_or(u32::MAX),
+            chunk_count: u32::try_from(chunks.len()).unwrap_or(u32::MAX),
+            truncated: snapshot.truncated,
+            unicode_mappings: snapshot.unicode_mappings,
+            glyphs: snapshot.glyphs,
+        })
+        .map_err(|_| CommandError::font_parser_unavailable())?;
+
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        if active.token.is_cancelled() {
+            let _ = on_event.send(FontParserJsonEvent::Cancelled);
+            return Ok(());
+        }
+        on_event
+            .send(FontParserJsonEvent::Chunk {
+                index: u32::try_from(index).unwrap_or(u32::MAX),
+                text: chunk.to_owned(),
+            })
+            .map_err(|_| CommandError::font_parser_unavailable())?;
+    }
+
+    on_event
+        .send(FontParserJsonEvent::Finished)
+        .map_err(|_| CommandError::font_parser_unavailable())
+}
+
+/// Abandons a running parser export. Unknown IDs are ignored: an export that already
+/// finished has nothing left to cancel.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub fn cancel_font_face_parser_export(
+    export_id: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), CommandError> {
+    ensure_trusted_window(&window)?;
+    validate_export_id(&export_id)?;
+    app.state::<ParserExports>().cancel(&export_id);
+    Ok(())
+}
+
+fn build_parser_snapshot(
+    app: &tauri::AppHandle,
+    face_id: &str,
+    cancel: &CancelToken,
+) -> Result<ParserJsonSnapshot, ParserExportFailure> {
+    let (source, face_index) = app
+        .state::<CatalogueState>()
+        .face_source(face_id)
+        .map_err(ParserExportFailure::Failed)?;
+    let bytes = catalogue::read_face_bytes(&source)
+        .map_err(|error| ParserExportFailure::Failed(map_catalogue_inspection_error(&error)))?;
+    font_inspection::export_face_json(bytes.as_slice(), face_index, cancel).map_err(|error| {
+        match error {
+            FontInspectionError::Cancelled => ParserExportFailure::Cancelled,
+            other => ParserExportFailure::Failed(map_catalogue_inspection_error(
+                &CatalogueInspectionError::Parser(other),
+            )),
+        }
     })
-    .await
-    .map_err(|_| CommandError::font_parser_unavailable())?
+}
+
+/// Splits `text` into pieces of at most `chunk_bytes`, never inside a character. Snapshot
+/// text carries the characters a font maps, so a naive byte split would cut them apart.
+fn split_on_char_boundaries(text: &str, chunk_bytes: usize) -> Vec<&str> {
+    debug_assert!(chunk_bytes >= 4, "a chunk must fit the longest character");
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let mut end = start.saturating_add(chunk_bytes).min(text.len());
+        while end > start && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        chunks.push(&text[start..end]);
+        start = end;
+    }
+    chunks
 }
 
 #[tauri::command]
@@ -444,6 +628,20 @@ fn validate_face_id(face_id: &str) -> Result<(), CommandError> {
     Ok(())
 }
 
+/// Export IDs come from the frontend, so they are kept to a short opaque shape: they are
+/// map keys and nothing else, and never reach the filesystem or a query.
+fn validate_export_id(export_id: &str) -> Result<(), CommandError> {
+    if export_id.is_empty()
+        || export_id.len() > MAX_EXPORT_ID_LENGTH
+        || !export_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(CommandError::invalid_parser_export_request());
+    }
+    Ok(())
+}
+
 fn validate_glyph_outline_request(request: &FontGlyphOutlineRequest) -> Result<(), CommandError> {
     validate_face_id(&request.face_id)?;
     if char::from_u32(request.codepoint).is_none()
@@ -523,7 +721,8 @@ mod tests {
     use crate::dto::{FontGlyphOutlineRequest, FontGlyphVariationValue};
 
     use super::{
-        is_trusted_app_origin, is_trusted_origin_header, update_version_matches, validate_face_id,
+        MAX_ACTIVE_PARSER_EXPORTS, ParserExports, is_trusted_app_origin, is_trusted_origin_header,
+        split_on_char_boundaries, update_version_matches, validate_export_id, validate_face_id,
         validate_glyph_outline_request,
     };
 
@@ -557,6 +756,87 @@ mod tests {
         assert!(validate_face_id("face:0123456789abcdef0123456789abcdef01234567").is_ok());
         assert!(validate_face_id("C:\\Windows\\Fonts\\arial.ttf").is_err());
         assert!(validate_face_id("face:not-a-digest").is_err());
+    }
+
+    #[test]
+    fn parser_exports_only_accept_short_opaque_ids() {
+        assert!(validate_export_id("a1b2c3-d4e5").is_ok());
+        assert!(validate_export_id("").is_err());
+        assert!(validate_export_id("../../secret").is_err());
+        assert!(validate_export_id(&"a".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn snapshot_chunks_never_split_a_character() {
+        // Snapshot text carries the characters a font maps, so a byte split would tear
+        // multi-byte characters in half and the reassembled document would not parse.
+        let text = "€".repeat(16);
+        let chunks = split_on_char_boundaries(&text, 8);
+
+        assert!(chunks.len() > 1, "the text must actually be split");
+        assert!(chunks.iter().all(|chunk| !chunk.is_empty()));
+        assert!(chunks.iter().all(|chunk| chunk.len() <= 8));
+        assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn an_empty_snapshot_produces_no_chunks() {
+        assert!(split_on_char_boundaries("", 1024).is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_real_snapshot_survives_the_round_trip_through_chunks() {
+        use crate::font_inspection::{CancelToken, export_face_json};
+
+        let data = std::fs::read(r"C:\Windows\Fonts\arial.ttf")
+            .expect("Arial is part of the supported Windows font set");
+        let snapshot =
+            export_face_json(&data, 0, &CancelToken::default()).expect("a bounded snapshot");
+
+        // Small chunks on purpose: the frontend reassembles whatever the stream sends, so
+        // the seam has to hold at any chunk size, not just the production one.
+        let chunks = split_on_char_boundaries(&snapshot.json, 997);
+        let rebuilt = chunks.concat();
+
+        assert!(chunks.len() > 1, "the snapshot must actually be split");
+        assert_eq!(rebuilt, snapshot.json);
+        serde_json::from_str::<serde_json::Value>(&rebuilt)
+            .expect("the reassembled document parses");
+    }
+
+    #[test]
+    fn a_registered_export_can_be_cancelled_until_it_is_finished() {
+        let exports = ParserExports::default();
+        let token = exports.begin("export-1").expect("a free slot");
+
+        assert!(!token.is_cancelled());
+        exports.cancel("export-1");
+        assert!(token.is_cancelled());
+
+        exports.finish("export-1");
+        // Cancelling a finished export is a no-op rather than an error.
+        exports.cancel("export-1");
+        assert!(exports.begin("export-1").is_ok(), "the slot is free again");
+    }
+
+    #[test]
+    fn parser_exports_are_bounded_and_never_reuse_a_live_id() {
+        let exports = ParserExports::default();
+        for index in 0..MAX_ACTIVE_PARSER_EXPORTS {
+            exports
+                .begin(&format!("export-{index}"))
+                .expect("slots up to the limit");
+        }
+
+        assert!(
+            exports.begin("export-overflow").is_err(),
+            "the limit holds the number of concurrent parses down"
+        );
+        assert!(
+            exports.begin("export-0").is_err(),
+            "a live ID cannot be claimed twice"
+        );
     }
 
     #[test]

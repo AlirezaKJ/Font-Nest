@@ -6,7 +6,8 @@ import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
 import type { FontFaceInspection } from '$lib/bindings/FontFaceInspection';
 import type { FontGlyphOutline } from '$lib/bindings/FontGlyphOutline';
 import type { FontGlyphOutlineRequest } from '$lib/bindings/FontGlyphOutlineRequest';
-import type { FontParserJsonExport } from '$lib/bindings/FontParserJsonExport';
+import type { FontParserJsonEvent } from '$lib/bindings/FontParserJsonEvent';
+import type { FontParserJsonRequest } from '$lib/bindings/FontParserJsonRequest';
 import type { GoogleFontFamilyDetails } from '$lib/bindings/GoogleFontFamilyDetails';
 import type { GoogleFontInstallResult } from '$lib/bindings/GoogleFontInstallResult';
 import type { GoogleFontPage } from '$lib/bindings/GoogleFontPage';
@@ -29,8 +30,22 @@ export function inspectFontGlyphOutline(
 	return invoke<FontGlyphOutline>('inspect_font_glyph_outline', { request });
 }
 
-export function exportFontFaceParserJson(faceId: string): Promise<FontParserJsonExport> {
-	return invoke<FontParserJsonExport>('export_font_face_parser_json', { faceId });
+/**
+ * Streams a face's parser snapshot. It arrives as ordered chunks rather than one string,
+ * so a large font never becomes a single oversized payload.
+ */
+export function exportFontFaceParserJson(
+	request: FontParserJsonRequest,
+	onEvent: (event: FontParserJsonEvent) => void
+): Promise<void> {
+	const channel = new Channel<FontParserJsonEvent>();
+	channel.onmessage = onEvent;
+	return invoke<void>('export_font_face_parser_json', { request, onEvent: channel });
+}
+
+/** Abandons a running export. Unknown IDs are ignored. */
+export function cancelFontFaceParserExport(exportId: string): Promise<void> {
+	return invoke<void>('cancel_font_face_parser_export', { exportId });
 }
 
 export function fontFaceFilePath(faceId: string): Promise<string> {

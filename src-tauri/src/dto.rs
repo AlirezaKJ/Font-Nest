@@ -195,15 +195,58 @@ pub struct FontGlyphOutline {
     pub outline_available: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+/// How much of one parser-snapshot section made it into the document.
+///
+/// The snapshot is a bounded diagnostic sample, so every capped section reports what it
+/// carries against what the face actually holds; the interface says so rather than letting
+/// a partial list read as the whole font.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/bindings/")]
-pub struct FontParserJsonExport {
+pub struct FontParserJsonSection {
+    pub included: u32,
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontParserJsonRequest {
     pub face_id: String,
-    pub parser_name: &'static str,
-    pub parser_version: &'static str,
-    pub json_byte_length: u32,
-    pub raw_json: String,
+    /// Caller-generated ID for this export, so it can be cancelled while it still runs.
+    pub export_id: String,
+}
+
+/// Ordered messages for one parser-snapshot export.
+///
+/// The document arrives in chunks instead of as a single string: a large snapshot never
+/// becomes one oversized IPC payload, and the interface can show progress and give up part
+/// way through.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(
+    tag = "event",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub enum FontParserJsonEvent {
+    Started {
+        face_id: String,
+        parser_name: &'static str,
+        parser_version: &'static str,
+        total_bytes: u32,
+        chunk_count: u32,
+        truncated: bool,
+        unicode_mappings: FontParserJsonSection,
+        glyphs: FontParserJsonSection,
+    },
+    Chunk {
+        index: u32,
+        text: String,
+    },
+    Finished,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
@@ -465,6 +508,20 @@ impl CommandError {
         Self {
             code: "invalid_glyph_request",
             message: "That glyph outline request is not valid.",
+        }
+    }
+
+    pub const fn invalid_parser_export_request() -> Self {
+        Self {
+            code: "invalid_parser_export_request",
+            message: "That parser export request is not valid.",
+        }
+    }
+
+    pub const fn too_many_parser_exports() -> Self {
+        Self {
+            code: "too_many_parser_exports",
+            message: "Too many parser exports are already running. Wait for one to finish.",
         }
     }
 
