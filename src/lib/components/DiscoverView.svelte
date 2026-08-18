@@ -647,7 +647,7 @@
 			// for the file the previous weight wanted.
 			const loaded = await previewQueue.enqueue(target.artifactId, async () => {
 				const preview = await prepareGoogleFontPreview(target.artifactId);
-				const face = new FontFace(preview.fontFamily, `url(${preview.dataUrl})`, {
+				const face = new FontFace(preview.fontFamily, `url(${preview.previewUrl})`, {
 					weight: target.variable ? '1 1000' : String(target.renderWeight)
 				});
 				await face.load();

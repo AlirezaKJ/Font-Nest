@@ -515,7 +515,8 @@ pub async fn prepare_google_font_preview(
         .path()
         .app_cache_dir()
         .map_err(|_| CommandError::font_download_failed())?;
-    google_fonts::prepare_preview(&artifact_id, &cache_dir)
+    let store = (*app.state::<local_fonts::PreviewStore>()).clone();
+    google_fonts::prepare_preview(&artifact_id, &cache_dir, &store)
         .await
         .map_err(map_google_fonts_error)
 }

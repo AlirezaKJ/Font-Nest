@@ -3,8 +3,6 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use futures_util::StreamExt;
 use reqwest::Url;
 use serde::Deserialize;
@@ -20,6 +18,7 @@ use crate::font_platform::{
     FontPlatformError, PlatformInstallation, ValidatedFontMetadata, install_planned_user_font,
     plan_user_font_installation, rollback_user_font, validate_font,
 };
+use crate::local_fonts::{PreviewStore, preview_url};
 use crate::managed_installations::{
     ManagedInstallationRecord, ManagedInstallationRepository, OperationKind, OperationStep,
 };
@@ -228,9 +227,18 @@ pub fn font_details(
     })
 }
 
+/// Verifies a provider artifact and hands the web view a way to fetch it.
+///
+/// The bytes stay in the backend. They are downloaded (or read from the cache) only
+/// against the digest the bundled manifest declares, parsed by the same validator local
+/// files go through, and then registered in the preview store behind an opaque handle;
+/// what crosses IPC is a `fontnest-preview` URL for that handle. The digest is the
+/// registration key, so asking for the same artifact twice reuses one registration
+/// rather than holding a second copy of the same font in memory.
 pub async fn prepare_preview(
     artifact_id: &str,
     cache_dir: &Path,
+    preview_store: &PreviewStore,
 ) -> Result<GoogleFontPreview, GoogleFontsError> {
     if !is_safe_id(artifact_id) {
         return Err(GoogleFontsError::InvalidRequest);
@@ -245,14 +253,12 @@ pub async fn prepare_preview(
         .ok_or(GoogleFontsError::InvalidRequest)?;
     let downloaded = cached_font(&artifact, cache_dir).await?;
     let font_family = format!("FontNestRemote{}", &artifact.git_blob_sha[..12]);
+    let handle = preview_store.insert_keyed(&artifact.git_blob_sha, downloaded.bytes);
 
     Ok(GoogleFontPreview {
         artifact_id: artifact.id,
         font_family,
-        data_url: format!(
-            "data:font/ttf;base64,{}",
-            BASE64_STANDARD.encode(downloaded.bytes)
-        ),
+        preview_url: preview_url(&handle),
     })
 }
 

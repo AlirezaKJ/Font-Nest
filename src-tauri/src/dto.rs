@@ -353,7 +353,9 @@ pub struct GoogleFontFamilyDetails {
 pub struct GoogleFontPreview {
     pub artifact_id: String,
     pub font_family: String,
-    pub data_url: String,
+    /// `fontnest-preview` URL for the verified bytes. Never a data URL and never a path:
+    /// the web view fetches through the internal protocol by opaque handle.
+    pub preview_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, TS)]

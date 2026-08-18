@@ -48,6 +48,9 @@ pub enum LocalFontError {
 /// Bytes for one validated font, keyed by an opaque handle. Never stores a path.
 struct PreviewEntry {
     handle: String,
+    /// Content key for bytes a caller can ask for again. A user-selected file has none:
+    /// every pick is its own registration, because the same path may hold new bytes.
+    key: Option<String>,
     bytes: Arc<Vec<u8>>,
 }
 
@@ -68,14 +71,43 @@ pub struct PreviewStore {
 
 impl PreviewStore {
     fn insert(&self, bytes: Vec<u8>) -> String {
-        let handle = generate_handle();
+        self.register(None, bytes)
+    }
+
+    /// Registers bytes that can be requested again under the same `key`, reusing the
+    /// handle already held for that key instead of registering a second copy.
+    ///
+    /// Provider artifacts are content addressed: the key is the digest that verified the
+    /// download, so the same bytes always answer with the same handle and re-previewing a
+    /// family the user already looked at costs nothing. Reuse also refreshes the entry, so
+    /// a font still being looked at is not the one evicted next.
+    pub fn insert_keyed(&self, key: &str, bytes: Vec<u8>) -> String {
+        self.register(Some(key), bytes)
+    }
+
+    fn register(&self, key: Option<&str>, bytes: Vec<u8>) -> String {
         let size = bytes.len();
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        if let Some(key) = key {
+            let held = inner
+                .entries
+                .iter()
+                .position(|entry| entry.key.as_deref() == Some(key));
+            if let Some(entry) = held.and_then(|index| inner.entries.remove(index)) {
+                let handle = entry.handle.clone();
+                inner.entries.push_back(entry);
+                return handle;
+            }
+        }
+
+        let handle = generate_handle();
         inner.entries.push_back(PreviewEntry {
             handle: handle.clone(),
+            key: key.map(ToOwned::to_owned),
             bytes: Arc::new(bytes),
         });
         inner.total_bytes = inner.total_bytes.saturating_add(size);
@@ -234,7 +266,7 @@ fn safe_file_name(file_name: &str) -> String {
 }
 
 /// The internal-protocol URL the web view uses to fetch validated preview bytes.
-fn preview_url(handle: &str) -> String {
+pub fn preview_url(handle: &str) -> String {
     #[cfg(any(windows, target_os = "android"))]
     {
         format!("http://fontnest-preview.localhost/{handle}")
@@ -438,8 +470,18 @@ fn sfnt_checksum(bytes: &[u8]) -> u32 {
 mod tests {
     use super::{
         LocalFontError, MAX_PREVIEW_ENTRIES, PreviewStore, extract_face_sfnt, is_valid_handle,
-        unicode_name, validate_and_register,
+        preview_url, unicode_name, validate_and_register,
     };
+
+    #[test]
+    fn a_preview_url_carries_only_the_handle() {
+        let url = preview_url("0123456789abcdef0123456789abcdef01234567");
+        assert!(url.contains("fontnest-preview"));
+        assert!(url.ends_with("/0123456789abcdef0123456789abcdef01234567"));
+        // Bytes are fetched, never carried. A data URL would put the font in the document
+        // itself, which is what this transport exists to avoid.
+        assert!(!url.starts_with("data:"));
+    }
 
     #[test]
     fn rejects_non_font_bytes() {
@@ -469,6 +511,39 @@ mod tests {
         assert!(store.get(&second).is_some());
         assert!(store.get("not-a-real-handle").is_none());
         assert!(store.get("../../secret").is_none());
+    }
+
+    #[test]
+    fn the_same_key_answers_with_one_registration() {
+        let store = PreviewStore::default();
+        let first = store.insert_keyed("sha-of-inter-regular", vec![1_u8; 32]);
+        let again = store.insert_keyed("sha-of-inter-regular", vec![1_u8; 32]);
+        let other = store.insert_keyed("sha-of-inter-italic", vec![2_u8; 32]);
+
+        assert_eq!(first, again, "the same artifact reuses its handle");
+        assert_ne!(first, other);
+        let inner = store.inner.lock().expect("registry lock");
+        assert_eq!(inner.entries.len(), 2, "no second copy of the same bytes");
+    }
+
+    #[test]
+    fn asking_for_a_keyed_preview_again_keeps_it_out_of_the_eviction_queue() {
+        let store = PreviewStore::default();
+        let kept = store.insert_keyed("still-on-screen", vec![3_u8; 16]);
+        for _ in 0..(MAX_PREVIEW_ENTRIES - 1) {
+            store.insert(vec![9_u8; 16]);
+        }
+        // Requesting it again moves it to the newest end, so the fonts registered
+        // around it are evicted first.
+        assert_eq!(store.insert_keyed("still-on-screen", vec![3_u8; 16]), kept);
+        for _ in 0..(MAX_PREVIEW_ENTRIES - 1) {
+            store.insert(vec![9_u8; 16]);
+        }
+
+        assert!(
+            store.get(&kept).is_some(),
+            "a preview that is still being asked for must survive"
+        );
     }
 
     #[test]

@@ -103,15 +103,6 @@
 		border-bottom: 1px solid var(--color-border);
 	}
 
-	.section-label {
-		margin: 0;
-		color: var(--color-subtle);
-		font-size: var(--text-micro);
-		font-weight: 650;
-		letter-spacing: 0.045em;
-		text-transform: uppercase;
-	}
-
 	h1 {
 		margin: 5px 0 0;
 		font-size: var(--text-heading);

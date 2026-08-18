@@ -5,6 +5,9 @@ import { describe, expect, it } from 'vitest';
 
 type TauriConfig = {
 	app?: {
+		security?: {
+			csp?: string;
+		};
 		windows?: Array<{
 			label?: string;
 			dragDropEnabled?: boolean;
@@ -47,6 +50,19 @@ describe('Tauri window configuration', () => {
 			'https://github.com/AlirezaKJ/Font-Nest/releases/latest/download/latest.json'
 		]);
 		expect(updater?.windows?.installMode).toBe('passive');
+	});
+
+	// Every font in the app is either bundled with it or served by handle through the
+	// preview protocol. Nothing arrives as a data URL, and the policy is what makes that
+	// a rule rather than a habit.
+	it('only lets fonts load from the app and the preview protocol', () => {
+		const configPath = new URL('../../src-tauri/tauri.conf.json', import.meta.url);
+		const config = JSON.parse(readFileSync(configPath, 'utf8')) as TauriConfig;
+		const fontSrc = /font-src ([^;]*)/.exec(config.app?.security?.csp ?? '')?.[1]?.trim();
+
+		expect(fontSrc).toBeDefined();
+		expect(fontSrc?.split(/\s+/)).toContain('http://fontnest-preview.localhost');
+		expect(fontSrc).not.toContain('data:');
 	});
 
 	// A compact breakpoint the window can never reach is dead CSS that nobody can

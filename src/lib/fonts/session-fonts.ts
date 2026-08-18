@@ -63,7 +63,7 @@ export async function activateInstalledGoogleFont(
 					const preview = await loadPreview(artifact.id);
 					const face = new FontFace(
 						familyName,
-						`url(${preview.dataUrl})`,
+						`url(${preview.previewUrl})`,
 						fontFaceDescriptors(artifact.style)
 					);
 					await face.load();

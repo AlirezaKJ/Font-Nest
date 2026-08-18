@@ -142,7 +142,7 @@ describe('Google Fonts commands', () => {
 		vi.mocked(invoke).mockResolvedValueOnce({
 			artifactId: 'gf:inter:regular',
 			fontFamily: 'FontNestRemotePreview',
-			dataUrl: 'data:font/ttf;base64,AA=='
+			previewUrl: 'http://fontnest-preview.localhost/0123456789abcdef0123456789abcdef01234567'
 		});
 
 		await getGoogleFontDetails('gf:inter');

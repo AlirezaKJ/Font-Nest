@@ -63,7 +63,7 @@ describe('activateInstalledGoogleFont', () => {
 		const loadPreview = vi.fn(async (artifactId: string) => ({
 			artifactId,
 			fontFamily: 'FontNestRemotePreview',
-			dataUrl: `data:font/ttf;base64,${artifactId}`
+			previewUrl: `http://fontnest-preview.localhost/${artifactId}`
 		}));
 
 		await activateInstalledGoogleFont('Inter', artifacts, loadPreview);

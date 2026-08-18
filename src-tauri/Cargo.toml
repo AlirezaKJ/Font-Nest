@@ -17,7 +17,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
-base64 = "0.22.1"
 fontdb = "0.23.0"
 futures-util = "0.3.31"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"] }

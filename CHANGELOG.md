@@ -76,6 +76,12 @@ a bundled copy when you are offline.
 - Typing in a specimen no longer writes your settings to disk on every keystroke, and previewing
   one font after another no longer keeps every font you looked at loaded for the rest of the
   session.
+- Previews in Discover are no longer carried into the view as text. A font file used to be encoded
+  into the message that delivers it, which made it about a third larger and put a copy inside the
+  page itself. Discover now fetches the font from FontNest's own internal channel using a handle
+  that means nothing outside the app, the same way previews of your installed fonts already work,
+  and a family you have already looked at is served from what is already in memory instead of being
+  read again. Scrolling a long list of families is lighter on memory as a result.
 
 ### Fixed
 
