@@ -4,13 +4,18 @@
 	"version": "0.1.4",
 	"license": "Apache-2.0",
 	"type": "module",
+	"packageManager": "pnpm@11.13.1",
+	"engines": {
+		"node": ">=24",
+		"pnpm": ">=11"
+	},
 	"scripts": {
 		"dev": "vite dev",
 		"build": "vite build",
 		"desktop": "tauri dev",
 		"desktop:build": "tauri build",
 		"preview": "vite preview",
-		"prepare": "svelte-kit sync || echo ''",
+		"prepare": "svelte-kit sync",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "prettier --check . && eslint .",
@@ -23,6 +28,9 @@
 		"rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
 		"rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
 		"rust:clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+		"version:check": "node scripts/versions.mjs",
+		"version:set": "node scripts/versions.mjs --set",
+		"verify": "pnpm version:check && pnpm check && pnpm lint && pnpm test && pnpm rust:fmt && pnpm rust:clippy && pnpm rust:test",
 		"tauri": "tauri"
 	},
 	"devDependencies": {

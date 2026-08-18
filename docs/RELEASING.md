@@ -27,18 +27,24 @@ will reject releases signed by a replacement key.
 
 ## Publish a release
 
-1. Update the version in all three files:
-    - `package.json`
-    - `src-tauri/Cargo.toml`
-    - `src-tauri/tauri.conf.json`
-2. Update `CHANGELOG.md`:
+1. Move every version file to the new version. `package.json` is the source of truth;
+   `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and `src-tauri/tauri.conf.json` follow it:
+
+    ```powershell
+    pnpm version:set 0.1.0
+    ```
+
+2. Update `CHANGELOG.md` by hand:
     - Rename the `## [Unreleased]` heading to `## [x.y.z] - YYYY-MM-DD` using today's date, and
       start a fresh empty `## [Unreleased]` section above it.
-    - Add the version's comparison link at the bottom of the file.
+    - Add the version's comparison link at the bottom of the file, and point the `[Unreleased]`
+      link at `v<x.y.z>...HEAD`.
     - FontNest shows these notes in **What's new**. It reads the copy on `main` first and falls
       back to the copy compiled into the build, so the changelog must be committed before the
       tag is pushed.
-3. Run the full verification suite.
+3. Run `pnpm verify`. It starts with `pnpm version:check`, which fails until every file above
+   agrees, then runs the type, lint, test and Rust checks. The same version check runs in CI on
+   every push, and again in the release workflow with the tag name.
 4. Commit and push the release changes.
 5. Create and push the matching version tag. For version `0.1.0`:
 
@@ -63,7 +69,7 @@ The first published release containing the updater establishes the trusted publi
 To verify a real update:
 
 1. Publish and install FontNest `0.1.0`.
-2. Bump all three version files to `0.1.1`.
+2. Run `pnpm version:set 0.1.1` and write the changelog section for it.
 3. Publish `v0.1.1` with the same updater private key.
 4. Launch the installed `0.1.0` build or use **Settings > Check for updates**.
 5. Confirm that FontNest offers `0.1.1`, downloads it, verifies it, and closes for installation.

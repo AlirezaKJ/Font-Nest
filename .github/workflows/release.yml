@@ -37,20 +37,18 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      # Same check developers run locally as `pnpm version:check`, plus the tag. A release must
+      # never ship an installer whose About box, updater feed and release notes disagree.
       - name: Verify release version
         shell: pwsh
         run: |
-          $tauriVersion = (Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json).version
-          $packageVersion = (Get-Content -Raw package.json | ConvertFrom-Json).version
-          $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "([^"]+)"$' | Select-Object -First 1).Matches.Groups[1].Value
-
-          if ($packageVersion -ne $tauriVersion -or $cargoVersion -ne $tauriVersion) {
-            throw "Release versions must match: package=$packageVersion cargo=$cargoVersion tauri=$tauriVersion"
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            node scripts/versions.mjs --tag $env:GITHUB_REF_NAME
+          } else {
+            node scripts/versions.mjs
           }
 
-          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$tauriVersion") {
-            throw "Tag $env:GITHUB_REF_NAME does not match application version v$tauriVersion"
-          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build and upload unsigned Windows release
         uses: tauri-apps/tauri-action@v1

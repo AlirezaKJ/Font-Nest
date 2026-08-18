@@ -36,18 +36,6 @@ a bundled copy when you are offline.
   thousand glyphs and Unicode mappings, tells you how many the face actually has, and lists the
   totals under `limits` in the snapshot itself. Copy JSON still gives you the whole thing.
 
-### Fixed
-
-- Opening Parser JSON on a big font, a CJK family for instance, used to hang FontNest while it
-  built one enormous document, and every other font action queued up behind it. The snapshot now
-  arrives in pieces with a progress readout, the rest of the app stays responsive while it loads,
-  and closing the panel or moving to another face stops the work rather than finishing something
-  nobody is waiting for.
-- The preview size slider now goes all the way down. Anything you set below 40px used to draw at
-  40px anyway, so the readout said one thing and the specimen showed another.
-
-### Changed
-
 - The window shrinks a lot further now (down to 520px wide), so you can snap FontNest to a third
   of the screen or park it beside your design tool. The compact layouts were already written, the
   window just refused to get small enough to reach them.
@@ -57,6 +45,20 @@ a bundled copy when you are offline.
 - Typing in a specimen no longer writes your settings to disk on every keystroke, and previewing
   one font after another no longer keeps every font you looked at loaded for the rest of the
   session.
+
+### Fixed
+
+- Opening Parser JSON on a big font, a CJK family for instance, used to hang FontNest while it
+  built one enormous document, and every other font action queued up behind it. The snapshot now
+  arrives in pieces with a progress readout, the rest of the app stays responsive while it loads,
+  and closing the panel or moving to another face stops the work rather than finishing something
+  nobody is waiting for.
+- The preview size slider now goes all the way down. Anything you set below 40px used to draw at
+  40px anyway, so the readout said one thing and the specimen showed another.
+- What's New lost the 0.1.4 heading, so everything that shipped in 0.1.4 was listed as unreleased
+  and the 0.1.4 release itself was missing from the list. Both are back where they belong.
+
+## [0.1.4] - 2026-08-07
 
 ### Added
 

@@ -1,0 +1,32 @@
+name: Version drift
+
+# Every version FontNest carries has to agree before a tag is pushed, not after. Catching the
+# drift on the branch is the difference between editing a file and re-cutting a release.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    name: Check versions agree
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      # Reads engines.node from package.json, so this job cannot drift from the version it checks.
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+
+      # The checker has no dependencies, so there is nothing to install first.
+      - name: Check versions
+        run: node scripts/versions.mjs
