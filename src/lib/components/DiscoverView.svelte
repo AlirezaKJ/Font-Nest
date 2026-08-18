@@ -13,6 +13,7 @@
 	import { discoverFamilyContextMenu } from '$lib/context-menu/entries';
 	import { KeyedTaskQueue, pickPreviewEvictionCandidate } from '$lib/discover/preview-queue';
 	import { pickPreviewArtifact } from '$lib/discover/preview-weights';
+	import { managedRecoveryNotice } from '$lib/discover/recovery-notice';
 	import { activateInstalledGoogleFont } from '$lib/fonts/session-fonts';
 	import { isStickySurfaceElevated } from '$lib/sticky-surface';
 	import {
@@ -242,6 +243,7 @@
 			? MANAGED_STORAGE_NOTICES[managedStorage.reason]
 			: ''
 	);
+	let recoveryNotice = $derived(managedRecoveryNotice(managedStorage));
 	let canInstall = $derived(nativeMode && !installBlockedNotice);
 	let families = $derived(page?.families ?? []);
 	let selectedFamily = $derived(
@@ -300,7 +302,12 @@
 				.catch(() => {
 					// A status FontNest cannot read is itself a reason not to offer installation.
 					if (!destroyed)
-						managedStorage = { writable: false, reason: 'ledgerUnavailable' };
+						managedStorage = {
+							writable: false,
+							reason: 'ledgerUnavailable',
+							recoveredOperations: 0,
+							quarantinedOperations: 0
+						};
 				});
 		}
 		void loadCatalogue(true);
@@ -871,6 +878,13 @@
 		<div class="desktop-notice" role="note">
 			<Icon name="alert" size={15} />
 			<span>Run <code>pnpm desktop</code> to download real previews or install fonts.</span>
+		</div>
+	{/if}
+
+	{#if recoveryNotice}
+		<div class="desktop-notice" role="note">
+			<Icon name="alert" size={15} />
+			<span>{recoveryNotice}</span>
 		</div>
 	{/if}
 

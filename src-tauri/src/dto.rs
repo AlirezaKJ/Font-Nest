@@ -425,6 +425,12 @@ pub enum ManagedStorageRecovery {
 pub struct ManagedStorageStatus {
     pub writable: bool,
     pub reason: Option<ManagedStorageRecovery>,
+    /// Interrupted font operations undone during this launch, so the session can say what it
+    /// cleaned up instead of the user meeting fonts they never finished installing.
+    pub recovered_operations: u32,
+    /// Operations `FontNest` has given up undoing, including ones from earlier launches. Their
+    /// files are still on the computer.
+    pub quarantined_operations: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

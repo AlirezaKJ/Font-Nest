@@ -17,10 +17,12 @@ use crate::dto::{
     GoogleFontPageRequest as GoogleFontPageRequestDto, GoogleFontPreview, InstallGoogleFontRequest,
 };
 use crate::font_platform::{
-    FontPlatformError, PlatformInstallation, ValidatedFontMetadata, install_user_font,
-    rollback_user_font, validate_font,
+    FontPlatformError, PlatformInstallation, ValidatedFontMetadata, install_planned_user_font,
+    plan_user_font_installation, rollback_user_font, validate_font,
 };
-use crate::managed_installations::{ManagedInstallationRecord, ManagedInstallationRepository};
+use crate::managed_installations::{
+    ManagedInstallationRecord, ManagedInstallationRepository, OperationKind, PlannedInstallStep,
+};
 
 const MANIFEST_SCHEMA_VERSION: u32 = 1;
 const MAX_CATALOGUE_PAGE_SIZE: usize = 100;
@@ -65,6 +67,14 @@ struct DownloadedFont {
 struct CompletedInstallation {
     artifact: GoogleFontArtifact,
     platform: PlatformInstallation,
+}
+
+/// What a batch managed to install before it stopped, and why it stopped. The fonts that did land
+/// are returned either way, because they are what has to be taken back.
+#[derive(Debug)]
+struct InstallBatchOutcome {
+    completed: Vec<CompletedInstallation>,
+    error: Option<GoogleFontsError>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -291,45 +301,14 @@ pub async fn install_fonts(
         downloads.push(cached_font(&artifact, cache_dir).await?);
     }
 
-    let completed = tauri::async_runtime::spawn_blocking(move || install_batch(downloads))
-        .await
-        .map_err(|_| GoogleFontsError::Platform)??;
-    let records = completed
-        .iter()
-        .map(|installation| ManagedInstallationRecord {
-            id: format!("{PROVIDER_ID}:{}", installation.artifact.id),
-            provider: PROVIDER_ID.to_owned(),
-            family_id: family.id.clone(),
-            artifact_id: installation.artifact.id.clone(),
-            family_name: family.family.clone(),
-            display_name: installation.platform.display_name.clone(),
-            source_commit: manifest.source_commit.clone(),
-            source_hash: installation.artifact.git_blob_sha.clone(),
-            installed_path: installation
-                .platform
-                .installed_path
-                .to_string_lossy()
-                .into_owned(),
-            registry_value_name: installation.platform.registry_value_name.clone(),
-            license: family.license.clone(),
-            license_path: license_path.to_string_lossy().into_owned(),
-        })
-        .collect::<Vec<_>>();
-    let completed_for_rollback = completed.clone();
-    let repository_for_write = repository.clone();
-    if tauri::async_runtime::spawn_blocking(move || repository_for_write.record_batch(&records))
-        .await
-        .map_err(|_| GoogleFontsError::Database)?
-        .is_err()
-    {
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            for installation in completed_for_rollback.iter().rev() {
-                let _ = rollback_user_font(&installation.platform);
-            }
-        })
-        .await;
-        return Err(GoogleFontsError::Database);
-    }
+    let completed = journalled_install(
+        &repository,
+        &family,
+        &manifest.source_commit,
+        &license_path,
+        downloads,
+    )
+    .await?;
 
     Ok(GoogleFontInstallResult {
         family_id: family.id,
@@ -340,6 +319,103 @@ pub async fn install_fonts(
             .collect(),
         already_installed_artifact_ids: already_installed,
     })
+}
+
+/// Installs downloaded fonts under an operation journal, so the computer is never left carrying a
+/// font `FontNest` cannot prove it placed.
+///
+/// The order matters and is the whole point: resolve every target, write the intent down, install,
+/// then record the installations and close the intent record in one transaction. Failing anywhere
+/// after the intent record exists leaves either a clean computer or a journal entry the next
+/// launch cleans up.
+async fn journalled_install(
+    repository: &ManagedInstallationRepository,
+    family: &GoogleFontFamily,
+    source_commit: &str,
+    license_path: &Path,
+    downloads: Vec<DownloadedFont>,
+) -> Result<Vec<CompletedInstallation>, GoogleFontsError> {
+    // Every target is resolved before the computer changes, so the journal can describe the whole
+    // operation up front rather than learn it as the work proceeds.
+    let mut plans = Vec::with_capacity(downloads.len());
+    for download in &downloads {
+        plans.push(
+            plan_user_font_installation(
+                &download.artifact.file_name,
+                &download.artifact.git_blob_sha,
+                &download.metadata,
+            )
+            .map_err(|error| map_platform_error(&error))?,
+        );
+    }
+
+    // Nothing touches the filesystem or the registry until this intent record is committed. If
+    // the process dies from here on, the next launch reads it and puts the computer back.
+    let operation_id = new_operation_id(&family.id);
+    let steps = downloads
+        .iter()
+        .zip(&plans)
+        .map(|(download, plan)| PlannedInstallStep {
+            artifact_id: download.artifact.id.clone(),
+            display_name: plan.display_name.clone(),
+            installed_path: plan.installed_path.to_string_lossy().into_owned(),
+            registry_value_name: plan.registry_value_name.clone(),
+        })
+        .collect::<Vec<_>>();
+    let journal = repository.clone();
+    let journal_id = operation_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        journal.begin_operation(&journal_id, OperationKind::Install, PROVIDER_ID, &steps)
+    })
+    .await
+    .map_err(|_| GoogleFontsError::Database)?
+    .map_err(|_| GoogleFontsError::Database)?;
+
+    let outcome = tauri::async_runtime::spawn_blocking(move || install_batch(downloads, plans))
+        .await
+        .map_err(|_| GoogleFontsError::Platform)?;
+    if let Some(error) = outcome.error {
+        abandon_operation(repository, &operation_id, outcome.completed).await;
+        return Err(error);
+    }
+    let completed = outcome.completed;
+
+    let records = completed
+        .iter()
+        .map(|installation| ManagedInstallationRecord {
+            id: format!("{PROVIDER_ID}:{}", installation.artifact.id),
+            provider: PROVIDER_ID.to_owned(),
+            family_id: family.id.clone(),
+            artifact_id: installation.artifact.id.clone(),
+            family_name: family.family.clone(),
+            display_name: installation.platform.display_name.clone(),
+            source_commit: source_commit.to_owned(),
+            source_hash: installation.artifact.git_blob_sha.clone(),
+            installed_path: installation
+                .platform
+                .installed_path
+                .to_string_lossy()
+                .into_owned(),
+            registry_value_name: installation.platform.registry_value_name.clone(),
+            license: family.license.clone(),
+            license_path: license_path.to_string_lossy().into_owned(),
+            operation_id: operation_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    let ledger = repository.clone();
+    let ledger_id = operation_id.clone();
+    // Recording the installations and closing the journal entry is one transaction: FontNest only
+    // ever claims a font it can prove it placed.
+    let committed = tauri::async_runtime::spawn_blocking(move || {
+        ledger.commit_operation(&ledger_id, &records)
+    })
+    .await;
+    if !matches!(committed, Ok(Ok(()))) {
+        abandon_operation(repository, &operation_id, completed).await;
+        return Err(GoogleFontsError::Database);
+    }
+
+    Ok(completed)
 }
 
 fn bundled_manifest() -> Result<&'static GoogleFontsManifest, GoogleFontsError> {
@@ -570,30 +646,86 @@ async fn write_cache_file(path: PathBuf, bytes: Vec<u8>) -> Result<(), GoogleFon
     .map_err(|_| GoogleFontsError::Download)?
 }
 
+/// Carries out journalled plans in order, stopping at the first refusal. Nothing is rolled back
+/// here: the caller owns undoing a failed operation, so a batch that stops halfway and a process
+/// that dies halfway are cleaned up by the same code.
 fn install_batch(
     downloads: Vec<DownloadedFont>,
-) -> Result<Vec<CompletedInstallation>, GoogleFontsError> {
+    plans: Vec<PlatformInstallation>,
+) -> InstallBatchOutcome {
     let mut completed = Vec::with_capacity(downloads.len());
-    for download in downloads {
-        match install_user_font(
-            &download.bytes,
-            &download.artifact.file_name,
-            &download.artifact.git_blob_sha,
-            &download.metadata,
-        ) {
-            Ok(platform) => completed.push(CompletedInstallation {
-                artifact: download.artifact,
-                platform,
-            }),
-            Err(error) => {
-                for installation in completed.iter().rev() {
-                    let _ = rollback_user_font(&installation.platform);
-                }
-                return Err(map_platform_error(&error));
-            }
+    for (download, plan) in downloads.into_iter().zip(plans) {
+        if let Err(error) = install_planned_user_font(&download.bytes, &plan) {
+            return InstallBatchOutcome {
+                completed,
+                error: Some(map_platform_error(&error)),
+            };
+        }
+        completed.push(CompletedInstallation {
+            artifact: download.artifact,
+            platform: plan,
+        });
+    }
+    InstallBatchOutcome {
+        completed,
+        error: None,
+    }
+}
+
+/// Takes back everything a failed operation installed and, only when the computer really is clean
+/// again, closes its journal entry. Anything that survives the rollback keeps the entry open on
+/// purpose, so the next launch finishes the job instead of leaving fonts nothing accounts for.
+async fn abandon_operation(
+    repository: &ManagedInstallationRepository,
+    operation_id: &str,
+    completed: Vec<CompletedInstallation>,
+) {
+    let clean = tauri::async_runtime::spawn_blocking(move || roll_back(&completed))
+        .await
+        .unwrap_or(false);
+    if !clean {
+        log::error!(
+            "A failed font installation could not be fully undone. FontNest will finish undoing it at the next launch."
+        );
+        return;
+    }
+
+    let repository = repository.clone();
+    let operation_id = operation_id.to_owned();
+    let closed = tauri::async_runtime::spawn_blocking(move || {
+        repository.discard_operation(&operation_id)
+    })
+    .await;
+    if !matches!(closed, Ok(Ok(()))) {
+        log::error!(
+            "An undone font operation stayed in the journal. The next launch closes it; nothing is left on the computer."
+        );
+    }
+}
+
+/// Rolls back in reverse order and reports whether every step succeeded. Every installation is
+/// attempted even after one fails, because a font left registered is worse than a wasted call.
+fn roll_back(completed: &[CompletedInstallation]) -> bool {
+    let mut clean = true;
+    for installation in completed.iter().rev() {
+        if let Err(error) = rollback_user_font(&installation.platform) {
+            log::error!(
+                "An installed font could not be taken back: {error} ({})",
+                installation.artifact.id
+            );
+            clean = false;
         }
     }
-    Ok(completed)
+    clean
+}
+
+/// A single operation's identity, unique across processes and across runs within a process.
+fn new_operation_id(family_id: &str) -> String {
+    let started = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{PROVIDER_ID}:{family_id}:{started}:{}", std::process::id())
 }
 
 fn map_platform_error(_error: &FontPlatformError) -> GoogleFontsError {

@@ -8,7 +8,14 @@ use rusqlite::{Connection, params};
 pub const LEDGER_FILE_NAME: &str = "fontnest.sqlite3";
 
 /// Highest schema version this build understands. It must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
+
+/// The journal state of an operation that may still be undone at the next launch.
+const OPERATION_OPEN: &str = "open";
+
+/// The journal state of an operation recovery gave up on. It is kept for diagnostics and is
+/// never retried, so a path `FontNest` refuses to touch cannot make every launch slower.
+const OPERATION_QUARANTINED: &str = "quarantined";
 
 /// How long a statement waits for another connection to release the write lock before it
 /// reports a busy database.
@@ -42,6 +49,31 @@ const MIGRATIONS: &[&str] = &["
 
     CREATE INDEX IF NOT EXISTS idx_managed_installations_provider_family
         ON managed_installations(provider, family_id);
+",
+    "
+    CREATE TABLE managed_operations (
+        id TEXT PRIMARY KEY NOT NULL,
+        kind TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        state TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        started_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE managed_operation_steps (
+        operation_id TEXT NOT NULL REFERENCES managed_operations(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL,
+        artifact_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        installed_path TEXT NOT NULL,
+        registry_value_name TEXT NOT NULL,
+        PRIMARY KEY (operation_id, ordinal)
+    );
+
+    CREATE INDEX idx_managed_operations_state ON managed_operations(state);
+
+    ALTER TABLE managed_installations ADD COLUMN operation_id TEXT NOT NULL DEFAULT '';
 "];
 
 /// Why the ledger could not be brought up to the schema this build expects.
@@ -72,6 +104,53 @@ pub struct ManagedInstallationRecord {
     pub registry_value_name: String,
     pub license: String,
     pub license_path: String,
+    /// The journal operation that placed this font, so a row can always be traced back to the
+    /// run that produced it.
+    pub operation_id: String,
+}
+
+/// What an interrupted operation was in the middle of doing. Only installation exists today;
+/// update, uninstall, and repair join it when those operations land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationKind {
+    Install,
+}
+
+impl OperationKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "install" => Some(Self::Install),
+            _ => None,
+        }
+    }
+}
+
+/// One font an operation intends to place on this computer. Every field is resolved before the
+/// filesystem or the registry is touched and written to the journal first, so an interrupted run
+/// can be undone from the record alone rather than from a guess about how far it got.
+#[derive(Debug, Clone)]
+pub struct PlannedInstallStep {
+    pub artifact_id: String,
+    pub display_name: String,
+    pub installed_path: String,
+    pub registry_value_name: String,
+}
+
+/// An operation the journal still holds open: whatever started it neither committed nor discarded
+/// it, so the computer may be carrying files and registry values `FontNest` cannot prove it owns.
+#[derive(Debug, Clone)]
+pub struct InterruptedOperation {
+    pub id: String,
+    pub kind: OperationKind,
+    pub provider: String,
+    pub attempts: i64,
+    pub steps: Vec<PlannedInstallStep>,
 }
 
 #[derive(Debug, Clone)]
@@ -150,48 +229,48 @@ impl ManagedInstallationRepository {
         rows.collect()
     }
 
-    pub fn record_batch(
+    /// Writes down everything an operation is about to do, before it does any of it.
+    ///
+    /// The rows this commits are the only reason an interrupted run can be cleaned up: the paths
+    /// and registry values are resolved up front rather than discovered as the work proceeds, so
+    /// recovery never has to guess where a half-finished install left its files.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the journal cannot be written. The caller must abandon the
+    /// operation rather than proceed, because nothing would be able to undo it.
+    pub fn begin_operation(
         &self,
-        records: &[ManagedInstallationRecord],
+        id: &str,
+        kind: OperationKind,
+        provider: &str,
+        steps: &[PlannedInstallStep],
     ) -> Result<(), rusqlite::Error> {
-        if records.is_empty() {
-            return Ok(());
-        }
-
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
-        let installed_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .try_into()
-            .unwrap_or(i64::MAX);
+        let now = unix_seconds();
 
+        transaction.execute(
+            "INSERT INTO managed_operations (
+                id, kind, provider, state, attempts, started_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)",
+            params![id, kind.as_str(), provider, OPERATION_OPEN, now],
+        )?;
         {
             let mut statement = transaction.prepare(
-                "INSERT INTO managed_installations (
-                    id, provider, family_id, artifact_id, family_name, display_name,
-                    source_commit, source_hash, installed_path, registry_value_name,
-                    license, license_path, installed_at
-                 ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
-                 )",
+                "INSERT INTO managed_operation_steps (
+                    operation_id, ordinal, artifact_id, display_name,
+                    installed_path, registry_value_name
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
-            for record in records {
+            for (ordinal, step) in (0_i64..).zip(steps) {
                 statement.execute(params![
-                    record.id,
-                    record.provider,
-                    record.family_id,
-                    record.artifact_id,
-                    record.family_name,
-                    record.display_name,
-                    record.source_commit,
-                    record.source_hash,
-                    record.installed_path,
-                    record.registry_value_name,
-                    record.license,
-                    record.license_path,
-                    installed_at,
+                    id,
+                    ordinal,
+                    step.artifact_id,
+                    step.display_name,
+                    step.installed_path,
+                    step.registry_value_name,
                 ])?;
             }
         }
@@ -199,9 +278,171 @@ impl ManagedInstallationRepository {
         transaction.commit()
     }
 
-    /// Opens a connection with the pragmas every ledger connection needs. Both are set outside a
+    /// Records what an operation installed and closes its journal entry in the same transaction.
+    ///
+    /// The two must not be separable. `FontNest` may only claim ownership of a font it can prove
+    /// it placed, so the ledger rows and the disappearance of the intent record either both
+    /// survive a crash or neither does.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the ledger cannot be written. The journal entry stays open,
+    /// so the next launch undoes the installation instead of leaving fonts nothing owns.
+    pub fn commit_operation(
+        &self,
+        id: &str,
+        records: &[ManagedInstallationRecord],
+    ) -> Result<(), rusqlite::Error> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        insert_records(&transaction, records)?;
+        transaction.execute("DELETE FROM managed_operations WHERE id = ?1", params![id])?;
+        transaction.commit()
+    }
+
+    /// Drops an operation that was undone while the process was still alive, so the next launch
+    /// does not try to undo it again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the journal entry cannot be removed.
+    pub fn discard_operation(&self, id: &str) -> Result<(), rusqlite::Error> {
+        self.open()?
+            .execute("DELETE FROM managed_operations WHERE id = ?1", params![id])
+            .map(|_| ())
+    }
+
+    /// Every operation still held open, oldest first, with the steps needed to undo it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the journal cannot be read.
+    pub fn interrupted_operations(&self) -> Result<Vec<InterruptedOperation>, rusqlite::Error> {
+        let connection = self.open()?;
+        let mut operations = Vec::new();
+        {
+            let mut statement = connection.prepare(
+                "SELECT id, kind, provider, attempts
+                 FROM managed_operations
+                 WHERE state = ?1
+                 ORDER BY started_at, id",
+            )?;
+            let rows = statement.query_map(params![OPERATION_OPEN], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, kind, provider, attempts) = row?;
+                // A kind this build does not understand is left alone rather than undone by
+                // guesswork; it is counted as unrecovered so it stays visible.
+                let Some(kind) = OperationKind::parse(&kind) else {
+                    log::error!("The font operation journal holds an unknown operation: {kind}");
+                    continue;
+                };
+                operations.push(InterruptedOperation {
+                    id,
+                    kind,
+                    provider,
+                    attempts,
+                    steps: Vec::new(),
+                });
+            }
+        }
+
+        let mut statement = connection.prepare(
+            "SELECT artifact_id, display_name, installed_path, registry_value_name
+             FROM managed_operation_steps
+             WHERE operation_id = ?1
+             ORDER BY ordinal",
+        )?;
+        for operation in &mut operations {
+            let rows = statement.query_map(params![operation.id], |row| {
+                Ok(PlannedInstallStep {
+                    artifact_id: row.get(0)?,
+                    display_name: row.get(1)?,
+                    installed_path: row.get(2)?,
+                    registry_value_name: row.get(3)?,
+                })
+            })?;
+            operation.steps = rows.collect::<Result<Vec<_>, _>>()?;
+        }
+
+        Ok(operations)
+    }
+
+    /// Counts one failed recovery pass and reports how many have now failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the attempt cannot be recorded.
+    pub fn record_failed_recovery(&self, id: &str) -> Result<i64, rusqlite::Error> {
+        let connection = self.open()?;
+        connection.execute(
+            "UPDATE managed_operations
+             SET attempts = attempts + 1, updated_at = ?2
+             WHERE id = ?1",
+            params![id, unix_seconds()],
+        )?;
+        connection.query_row(
+            "SELECT attempts FROM managed_operations WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+    }
+
+    /// Stops retrying an operation recovery cannot finish, keeping the record for diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the operation cannot be marked.
+    pub fn quarantine_operation(&self, id: &str) -> Result<(), rusqlite::Error> {
+        self.open()?
+            .execute(
+                "UPDATE managed_operations SET state = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, OPERATION_QUARANTINED, unix_seconds()],
+            )
+            .map(|_| ())
+    }
+
+    /// How many operations recovery has given up on.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the journal cannot be read.
+    pub fn quarantined_operation_count(&self) -> Result<i64, rusqlite::Error> {
+        self.open()?.query_row(
+            "SELECT COUNT(*) FROM managed_operations WHERE state = ?1",
+            params![OPERATION_QUARANTINED],
+            |row| row.get(0),
+        )
+    }
+
+    /// Whether the ledger already proves `FontNest` owns the font at this path.
+    ///
+    /// Recovery asks before it deletes anything: a committed installation is never collateral
+    /// damage of an unrelated journal entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the ledger cannot be read. The caller must treat that as
+    /// "possibly owned" and leave the file alone.
+    pub fn is_recorded_installation(&self, installed_path: &str) -> Result<bool, rusqlite::Error> {
+        self.open()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM managed_installations WHERE installed_path = ?1)",
+            params![installed_path],
+            |row| row.get(0),
+        )
+    }
+
+    /// Opens a connection with the pragmas every ledger connection needs. They are set outside a
     /// transaction on purpose: `SQLite` ignores a `foreign_keys` change inside one, and the
-    /// journal mode is a property of the file rather than of a statement.
+    /// journal mode is a property of the file rather than of a statement. `synchronous = FULL`
+    /// costs an fsync per commit and buys the thing the journal exists for: an intent record that
+    /// is really on the disk before the filesystem and the registry are touched.
     fn open(&self) -> Result<Connection, rusqlite::Error> {
         let connection = Connection::open(&self.path)?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
@@ -209,24 +450,78 @@ impl ManagedInstallationRepository {
             "
             PRAGMA foreign_keys = ON;
             PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = FULL;
             ",
         )?;
         Ok(connection)
     }
 }
 
+fn insert_records(
+    transaction: &rusqlite::Transaction<'_>,
+    records: &[ManagedInstallationRecord],
+) -> Result<(), rusqlite::Error> {
+    if records.is_empty() {
+        return Ok(());
+    }
+
+    let installed_at = unix_seconds();
+    let mut statement = transaction.prepare(
+        "INSERT INTO managed_installations (
+            id, provider, family_id, artifact_id, family_name, display_name,
+            source_commit, source_hash, installed_path, registry_value_name,
+            license, license_path, installed_at, operation_id
+         ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+         )",
+    )?;
+    for record in records {
+        statement.execute(params![
+            record.id,
+            record.provider,
+            record.family_id,
+            record.artifact_id,
+            record.family_name,
+            record.display_name,
+            record.source_commit,
+            record.source_hash,
+            record.installed_path,
+            record.registry_value_name,
+            record.license,
+            record.license_path,
+            installed_at,
+            record.operation_id,
+        ])?;
+    }
+
+    Ok(())
+}
+
+fn unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .try_into()
+        .unwrap_or(i64::MAX)
+}
+
 fn schema_version(connection: &Connection) -> Result<i64, rusqlite::Error> {
     connection.pragma_query_value(None, "user_version", |row| row.get(0))
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::{
-        LedgerError, MIGRATIONS, ManagedInstallationRecord, ManagedInstallationRepository,
-        SCHEMA_VERSION, schema_version,
+        InterruptedOperation, LedgerError, MIGRATIONS, ManagedInstallationRecord,
+        ManagedInstallationRepository, OperationKind, PlannedInstallStep, SCHEMA_VERSION,
+        schema_version,
     };
     use rusqlite::Connection;
     use std::path::Path;
+
+    const OPERATION: &str = "google-fonts:gf:inter:1723996800000000000:4242";
 
     fn sample_record() -> ManagedInstallationRecord {
         ManagedInstallationRecord {
@@ -244,12 +539,53 @@ mod tests {
             registry_value_name: "Inter Regular (TrueType)".to_owned(),
             license: "OFL-1.1".to_owned(),
             license_path: "C:\\FontNest\\licenses\\inter-OFL.txt".to_owned(),
+            operation_id: OPERATION.to_owned(),
         }
+    }
+
+    fn sample_step() -> PlannedInstallStep {
+        let record = sample_record();
+        PlannedInstallStep {
+            artifact_id: record.artifact_id,
+            display_name: record.display_name,
+            installed_path: record.installed_path,
+            registry_value_name: record.registry_value_name,
+        }
+    }
+
+    fn begin(repository: &ManagedInstallationRepository) {
+        repository
+            .begin_operation(
+                OPERATION,
+                OperationKind::Install,
+                "google-fonts",
+                &[sample_step()],
+            )
+            .expect("the journal write");
+    }
+
+    /// The whole install path in one call: journal the intent, then commit the ledger rows.
+    fn install(repository: &ManagedInstallationRepository) {
+        begin(repository);
+        repository
+            .commit_operation(OPERATION, &[sample_record()])
+            .expect("the ledger write");
+    }
+
+    fn ready_repository(directory: &Path) -> ManagedInstallationRepository {
+        let repository = ManagedInstallationRepository::in_app_data_dir(directory);
+        repository.initialize().expect("the first migration");
+        repository
     }
 
     fn recorded_version(path: &Path) -> i64 {
         let connection = Connection::open(path).expect("the ledger opens");
         schema_version(&connection).expect("a schema version")
+    }
+
+    fn only(operations: &[InterruptedOperation]) -> &InterruptedOperation {
+        assert_eq!(operations.len(), 1, "exactly one open operation");
+        &operations[0]
     }
 
     #[test]
@@ -260,12 +596,9 @@ mod tests {
     #[test]
     fn managed_installations_are_recorded_transactionally() {
         let temp = tempfile::tempdir().expect("a temporary directory");
-        let repository = ManagedInstallationRepository::in_app_data_dir(temp.path());
-        repository.initialize().expect("the first migration");
+        let repository = ready_repository(temp.path());
 
-        repository
-            .record_batch(&[sample_record()])
-            .expect("the ledger write");
+        install(&repository);
 
         assert_eq!(
             repository
@@ -292,9 +625,7 @@ mod tests {
         let path = temp.path().join("fontnest.sqlite3");
         let repository = ManagedInstallationRepository::new(path.clone());
         repository.initialize().expect("the first migration");
-        repository
-            .record_batch(&[sample_record()])
-            .expect("the ledger write");
+        install(&repository);
 
         repository.initialize().expect("a repeated migration run");
 
@@ -311,7 +642,8 @@ mod tests {
     #[test]
     fn a_pre_migration_ledger_is_adopted_without_losing_rows() {
         // Exactly what FontNest 0.1.4 and earlier left behind: the tables exist, but nothing ever
-        // stamped `user_version`, so the file still reports schema 0.
+        // stamped `user_version`, so the file still reports schema 0 and carries neither a
+        // journal nor the column that names the operation a row came from.
         let temp = tempfile::tempdir().expect("a temporary directory");
         let path = temp.path().join("fontnest.sqlite3");
         {
@@ -319,11 +651,23 @@ mod tests {
             connection
                 .execute_batch(MIGRATIONS[0])
                 .expect("the legacy tables");
+            connection
+                .execute(
+                    "INSERT INTO managed_installations (
+                        id, provider, family_id, artifact_id, family_name, display_name,
+                        source_commit, source_hash, installed_path, registry_value_name,
+                        license, license_path, installed_at
+                     ) VALUES (
+                        'google-fonts:gf:inter:regular', 'google-fonts', 'gf:inter',
+                        'gf:inter:regular', 'Inter', 'Inter Regular', '0123', 'abcd',
+                        'C:\\Fonts\\FontNest-Inter.ttf', 'Inter Regular (TrueType)',
+                        'OFL-1.1', 'C:\\licenses\\inter.txt', 0
+                     )",
+                    [],
+                )
+                .expect("a legacy row");
         }
         let repository = ManagedInstallationRepository::new(path.clone());
-        repository
-            .record_batch(&[sample_record()])
-            .expect("a legacy row");
         assert_eq!(recorded_version(&path), 0);
 
         repository.initialize().expect("the adoption run");
@@ -335,6 +679,13 @@ mod tests {
                 .expect("installed IDs"),
             vec!["gf:inter:regular"]
         );
+        // Adopting a ledger must not invent work for recovery to undo.
+        assert!(
+            repository
+                .interrupted_operations()
+                .expect("the journal")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -343,9 +694,7 @@ mod tests {
         let path = temp.path().join("fontnest.sqlite3");
         let repository = ManagedInstallationRepository::new(path.clone());
         repository.initialize().expect("the first migration");
-        repository
-            .record_batch(&[sample_record()])
-            .expect("the ledger write");
+        install(&repository);
         let future = SCHEMA_VERSION + 1;
         {
             let connection = Connection::open(&path).expect("the ledger opens");
@@ -370,6 +719,137 @@ mod tests {
                 .installed_artifact_ids("google-fonts", "gf:inter")
                 .expect("installed IDs"),
             vec!["gf:inter:regular"]
+        );
+    }
+
+    #[test]
+    fn an_open_operation_carries_everything_needed_to_undo_it() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let repository = ready_repository(temp.path());
+
+        begin(&repository);
+
+        // This is what the next launch sees after a crash part way through an install.
+        let open = repository.interrupted_operations().expect("the journal");
+        let operation = only(&open);
+        assert_eq!(operation.id, OPERATION);
+        assert_eq!(operation.kind, OperationKind::Install);
+        assert_eq!(operation.provider, "google-fonts");
+        assert_eq!(operation.attempts, 0);
+        assert_eq!(operation.steps.len(), 1);
+        assert_eq!(
+            operation.steps[0].installed_path,
+            sample_step().installed_path
+        );
+        assert_eq!(
+            operation.steps[0].registry_value_name,
+            sample_step().registry_value_name
+        );
+    }
+
+    #[test]
+    fn committing_records_the_installation_and_closes_the_journal_together() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let repository = ready_repository(temp.path());
+
+        install(&repository);
+
+        assert!(
+            repository
+                .interrupted_operations()
+                .expect("the journal")
+                .is_empty()
+        );
+        assert!(
+            repository
+                .is_recorded_installation(&sample_record().installed_path)
+                .expect("the ledger lookup")
+        );
+    }
+
+    #[test]
+    fn a_failed_ledger_write_leaves_the_operation_open_for_recovery() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let repository = ready_repository(temp.path());
+        begin(&repository);
+        // Two rows with the same primary key, so the insert fails part way through the batch.
+        let records = vec![sample_record(), sample_record()];
+
+        repository
+            .commit_operation(OPERATION, &records)
+            .expect_err("a duplicate installation is refused");
+
+        // Neither half landed, so the next launch still knows to undo the fonts on disk.
+        assert!(
+            !repository
+                .is_recorded_installation(&sample_record().installed_path)
+                .expect("the ledger lookup")
+        );
+        assert_eq!(
+            only(&repository.interrupted_operations().expect("the journal")).id,
+            OPERATION
+        );
+    }
+
+    #[test]
+    fn discarding_an_operation_removes_it_and_its_steps() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let repository = ready_repository(temp.path());
+        begin(&repository);
+
+        repository
+            .discard_operation(OPERATION)
+            .expect("the journal delete");
+
+        assert!(
+            repository
+                .interrupted_operations()
+                .expect("the journal")
+                .is_empty()
+        );
+        let connection =
+            Connection::open(temp.path().join("fontnest.sqlite3")).expect("the ledger opens");
+        let steps: i64 = connection
+            .query_row("SELECT COUNT(*) FROM managed_operation_steps", [], |row| {
+                row.get(0)
+            })
+            .expect("a step count");
+        assert_eq!(steps, 0, "the cascade removed the steps");
+    }
+
+    #[test]
+    fn a_quarantined_operation_is_counted_but_never_retried() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let repository = ready_repository(temp.path());
+        begin(&repository);
+
+        assert_eq!(
+            repository
+                .record_failed_recovery(OPERATION)
+                .expect("an attempt count"),
+            1
+        );
+        assert_eq!(
+            repository
+                .record_failed_recovery(OPERATION)
+                .expect("an attempt count"),
+            2
+        );
+        repository
+            .quarantine_operation(OPERATION)
+            .expect("the quarantine");
+
+        assert!(
+            repository
+                .interrupted_operations()
+                .expect("the journal")
+                .is_empty()
+        );
+        assert_eq!(
+            repository
+                .quarantined_operation_count()
+                .expect("the quarantine count"),
+            1
         );
     }
 }

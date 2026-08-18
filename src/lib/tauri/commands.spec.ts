@@ -176,7 +176,12 @@ describe('Google Fonts commands', () => {
 	});
 
 	it('reports why managed font operations are unavailable', async () => {
-		const response = { writable: false, reason: 'locked' };
+		const response = {
+			writable: false,
+			reason: 'locked',
+			recoveredOperations: 0,
+			quarantinedOperations: 0
+		};
 		vi.mocked(invoke).mockResolvedValue(response);
 
 		await expect(managedStorageStatus()).resolves.toEqual(response);

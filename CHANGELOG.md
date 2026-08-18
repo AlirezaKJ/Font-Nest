@@ -12,6 +12,12 @@ a bundled copy when you are offline.
 
 ### Changed
 
+- Installing fonts from Discover is now crash-safe. FontNest writes down every file it is about to
+  place and every registry entry it is about to make before it touches either, and only records
+  the install once all of it succeeded. If the app is closed, killed or loses power halfway
+  through, the next launch reads that note and puts your computer back the way it was, so you are
+  never left with fonts that are half-installed and that FontNest cannot see or remove. Discover
+  tells you when it has cleaned something up, and says so plainly in the rare case it could not.
 - The character grid, the glyph drawing and the metric chart in a font's preview now draw the
   selected face's own file rather than asking your system for the family by name. This matters
   most for coverage: your system used to quietly borrow a character from another font when the

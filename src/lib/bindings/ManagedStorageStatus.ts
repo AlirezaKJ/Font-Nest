@@ -5,4 +5,14 @@ import type { ManagedStorageRecovery } from "./ManagedStorageRecovery";
  * Whether installing, updating, uninstalling, repairing, and restoring fonts are available in
  * this session. Browsing, previewing, and inspecting stay available either way.
  */
-export type ManagedStorageStatus = { writable: boolean, reason: ManagedStorageRecovery | null, };
+export type ManagedStorageStatus = { writable: boolean, reason: ManagedStorageRecovery | null, 
+/**
+ * Interrupted font operations undone during this launch, so the session can say what it
+ * cleaned up instead of the user meeting fonts they never finished installing.
+ */
+recoveredOperations: number, 
+/**
+ * Operations `FontNest` has given up undoing, including ones from earlier launches. Their
+ * files are still on the computer.
+ */
+quarantinedOperations: number, };

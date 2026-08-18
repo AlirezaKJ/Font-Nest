@@ -2,6 +2,11 @@ use std::path::{Path, PathBuf};
 
 use ttf_parser::{Face, name_id};
 
+/// Every file `FontNest` writes into the user font directory starts with this. It is the first
+/// thing checked before anything is deleted, so a font the user installed themselves is never
+/// mistaken for one of ours.
+const MANAGED_FILE_PREFIX: &str = "FontNest-";
+
 #[derive(Debug, Clone)]
 pub struct ValidatedFontMetadata {
     pub full_name: String,
@@ -225,31 +230,120 @@ fn managed_file_name(
     {
         return Err(FontPlatformError::InvalidMetadata);
     }
-    Ok(format!("FontNest-{}-{safe_stem}.ttf", &source_hash[..12]))
+    Ok(format!(
+        "{MANAGED_FILE_PREFIX}{}-{safe_stem}.ttf",
+        &source_hash[..12]
+    ))
 }
 
+/// Where per-user fonts live for the signed-in account.
+///
+/// # Errors
+///
+/// Returns [`FontPlatformError::UserFontDirectoryUnavailable`] when the environment does not name
+/// a local application data directory.
 #[cfg(windows)]
-pub fn install_user_font(
-    bytes: &[u8],
+pub fn user_font_directory() -> Result<PathBuf, FontPlatformError> {
+    let local_app_data =
+        std::env::var_os("LOCALAPPDATA").ok_or(FontPlatformError::UserFontDirectoryUnavailable)?;
+    Ok(PathBuf::from(local_app_data)
+        .join("Microsoft")
+        .join("Windows")
+        .join("Fonts"))
+}
+
+/// Works out exactly where a font would be written and what it would be called in the registry,
+/// without touching either.
+///
+/// Installation is journalled before it begins, and the journal can only be written from values
+/// that are already known. Resolving them here, ahead of any change to the computer, is what lets
+/// an interrupted install be undone from the record instead of from a guess.
+///
+/// # Errors
+///
+/// Returns [`FontPlatformError::InvalidMetadata`] or [`FontPlatformError::InvalidFont`] when the
+/// artifact cannot produce a safe managed file name, and
+/// [`FontPlatformError::UserFontDirectoryUnavailable`] when the user font directory is unknown.
+#[cfg(windows)]
+pub fn plan_user_font_installation(
     original_file_name: &str,
     source_hash: &str,
     metadata: &ValidatedFontMetadata,
 ) -> Result<PlatformInstallation, FontPlatformError> {
+    Ok(PlatformInstallation {
+        installed_path: user_font_directory()?
+            .join(managed_file_name(original_file_name, source_hash)?),
+        registry_value_name: format!("{} (TrueType)", metadata.full_name),
+        display_name: metadata.full_name.clone(),
+    })
+}
+
+/// Whether this path is one `FontNest` may delete while cleaning up after itself.
+///
+/// Recovery works from a journal that a crashed process wrote, so the path is checked again rather
+/// than trusted: it must be named like a managed font, sit directly in the real user font
+/// directory, and not be a symlink or junction that could redirect the delete somewhere else.
+#[cfg(windows)]
+pub fn is_managed_installation_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if !name.starts_with(MANAGED_FILE_PREFIX) || !name.to_ascii_lowercase().ends_with(".ttf") {
+        return false;
+    }
+    // Never follow a reparse point to a delete: the target could be anywhere on the computer.
+    if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return false;
+    }
+    let (Ok(font_dir), Some(parent)) = (user_font_directory(), path.parent()) else {
+        return false;
+    };
+    match (std::fs::canonicalize(parent), std::fs::canonicalize(&font_dir)) {
+        (Ok(parent), Ok(font_dir)) => parent == font_dir,
+        // Without both real directories there is nothing safe to compare, and nothing to delete.
+        _ => false,
+    }
+}
+
+/// Nothing is managed on a platform that cannot install fonts, so nothing may be deleted either.
+#[cfg(not(windows))]
+pub fn is_managed_installation_path(_path: &Path) -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+pub fn plan_user_font_installation(
+    _original_file_name: &str,
+    _source_hash: &str,
+    _metadata: &ValidatedFontMetadata,
+) -> Result<PlatformInstallation, FontPlatformError> {
+    Err(FontPlatformError::UnsupportedPlatform)
+}
+
+/// Carries out a plan that has already been written to the operation journal.
+///
+/// # Errors
+///
+/// Returns the platform error when the file cannot be written, the registry value conflicts with
+/// an existing entry, or the operating system refuses to register the font. Every failure path
+/// removes what it created before returning.
+#[cfg(windows)]
+pub fn install_planned_user_font(
+    bytes: &[u8],
+    plan: &PlatformInstallation,
+) -> Result<(), FontPlatformError> {
     use std::fs::OpenOptions;
     use std::io::Write;
 
     use winreg::RegKey;
     use winreg::enums::HKEY_CURRENT_USER;
 
-    let local_app_data =
-        std::env::var_os("LOCALAPPDATA").ok_or(FontPlatformError::UserFontDirectoryUnavailable)?;
-    let font_dir = PathBuf::from(local_app_data)
-        .join("Microsoft")
-        .join("Windows")
-        .join("Fonts");
-    std::fs::create_dir_all(&font_dir)?;
+    let target = plan.installed_path.clone();
+    let font_dir = target
+        .parent()
+        .ok_or(FontPlatformError::UserFontDirectoryUnavailable)?;
+    std::fs::create_dir_all(font_dir)?;
 
-    let target = font_dir.join(managed_file_name(original_file_name, source_hash)?);
     if target.exists() {
         return Err(FontPlatformError::TargetConflict);
     }
@@ -278,7 +372,7 @@ pub fn install_user_font(
         return Err(FontPlatformError::Io(error));
     }
 
-    let registry_value_name = format!("{} (TrueType)", metadata.full_name);
+    let registry_value_name = plan.registry_value_name.clone();
     let target_value = target.to_string_lossy().into_owned();
     let current_user = RegKey::predef(HKEY_CURRENT_USER);
     let (fonts_key, _) = match current_user
@@ -313,37 +407,49 @@ pub fn install_user_font(
     }
     broadcast_font_change();
 
-    Ok(PlatformInstallation {
-        installed_path: target,
-        registry_value_name,
-        display_name: metadata.full_name.clone(),
-    })
+    Ok(())
 }
 
 #[cfg(not(windows))]
-pub fn install_user_font(
+pub fn install_planned_user_font(
     _bytes: &[u8],
-    _original_file_name: &str,
-    _source_hash: &str,
-    _metadata: &ValidatedFontMetadata,
-) -> Result<PlatformInstallation, FontPlatformError> {
+    _plan: &PlatformInstallation,
+) -> Result<(), FontPlatformError> {
     Err(FontPlatformError::UnsupportedPlatform)
 }
 
+/// Takes back an installation, whether it failed moments ago or was left behind by a run that
+/// never finished.
+///
+/// Both the registry value and the file are removed only when they are still the ones this
+/// installation created: an entry that now points somewhere else belongs to another font, and a
+/// path outside the managed naming and location is not `FontNest`'s to delete.
+///
+/// # Errors
+///
+/// Returns [`FontPlatformError::TargetConflict`] when the file is no longer recognizably a managed
+/// font, and the I/O error when it exists but cannot be removed.
 #[cfg(windows)]
 pub fn rollback_user_font(installation: &PlatformInstallation) -> Result<(), FontPlatformError> {
     use winreg::RegKey;
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE};
 
     unregister_font_resource(&installation.installed_path);
+    let target_value = installation.installed_path.to_string_lossy().into_owned();
     let current_user = RegKey::predef(HKEY_CURRENT_USER);
     if let Ok(fonts_key) = current_user.open_subkey_with_flags(
         "Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts",
-        KEY_SET_VALUE,
-    ) {
+        KEY_QUERY_VALUE | KEY_SET_VALUE,
+    ) && fonts_key
+        .get_value::<String, _>(&installation.registry_value_name)
+        .is_ok_and(|existing| existing.eq_ignore_ascii_case(&target_value))
+    {
         let _ = fonts_key.delete_value(&installation.registry_value_name);
     }
     if installation.installed_path.exists() {
+        if !is_managed_installation_path(&installation.installed_path) {
+            return Err(FontPlatformError::TargetConflict);
+        }
         std::fs::remove_file(&installation.installed_path)?;
     }
     broadcast_font_change();

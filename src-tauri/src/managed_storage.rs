@@ -9,6 +9,7 @@ use std::path::Path;
 
 use crate::dto::{ManagedStorageRecovery, ManagedStorageStatus};
 use crate::managed_installations::{LedgerError, ManagedInstallationRepository};
+use crate::managed_recovery::{RecoveryReport, recover_interrupted_operations};
 
 /// Lock file next to the ledger. Its contents are never read; holding the handle open is the
 /// whole signal.
@@ -23,6 +24,9 @@ const LOCK_VIOLATION: i32 = 33;
 /// Whether this process may mutate managed font state, and why not when it may not.
 pub struct ManagedStorage {
     recovery: Option<ManagedStorageRecovery>,
+    /// What startup recovery undid, so the session can report it once rather than let the user
+    /// discover fonts they never finished installing.
+    report: RecoveryReport,
     /// Held open for the lifetime of the process. Dropping it releases the writer lock, so it
     /// lives here rather than in the function that acquired it.
     _writer_lock: Option<File>,
@@ -42,9 +46,8 @@ impl ManagedStorage {
             Err(reason) => return Self::recovery(reason),
         };
 
-        if let Err(error) =
-            ManagedInstallationRepository::in_app_data_dir(app_data_dir).initialize()
-        {
+        let repository = ManagedInstallationRepository::in_app_data_dir(app_data_dir);
+        if let Err(error) = repository.initialize() {
             log::error!("The managed-installation ledger could not be prepared: {error}");
             return Self::recovery(match error {
                 LedgerError::SchemaTooNew { .. } => ManagedStorageRecovery::SchemaTooNew,
@@ -54,8 +57,12 @@ impl ManagedStorage {
             });
         }
 
+        // This process holds the writer lock and the ledger is at a schema it understands, so
+        // anything the operation journal still holds open belongs to a run that never finished.
+        // Undo it before the first command can act on a computer nobody has accounted for.
         Self {
             recovery: None,
+            report: recover_interrupted_operations(&repository),
             _writer_lock: Some(writer_lock),
         }
     }
@@ -63,6 +70,7 @@ impl ManagedStorage {
     fn recovery(reason: ManagedStorageRecovery) -> Self {
         Self {
             recovery: Some(reason),
+            report: RecoveryReport::default(),
             _writer_lock: None,
         }
     }
@@ -71,6 +79,8 @@ impl ManagedStorage {
         ManagedStorageStatus {
             writable: self.recovery.is_none(),
             reason: self.recovery,
+            recovered_operations: self.report.recovered,
+            quarantined_operations: self.report.quarantined,
         }
     }
 

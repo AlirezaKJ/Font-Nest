@@ -8,6 +8,7 @@ mod font_variations;
 mod google_fonts;
 mod local_fonts;
 mod managed_installations;
+mod managed_recovery;
 mod managed_storage;
 mod release_notes;
 
