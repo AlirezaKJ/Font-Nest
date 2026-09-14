@@ -225,7 +225,7 @@ function collectToolchainProblems(root) {
 
 	const declaredPnpm = manifest.packageManager?.match(/^pnpm@(\d+\.\d+\.\d+)/)?.[1];
 	const workflowPnpm = workflow.match(
-		/action-setup@[^\n]*\n\s*with:\n\s*version:\s*(\S+)\s*$/m
+		/action-setup@[^\n]*\n\s*with:\r?\n\s*version:\s*(\S+)\s*$/m
 	)?.[1];
 	if (declaredPnpm === undefined) {
 		problems.push({

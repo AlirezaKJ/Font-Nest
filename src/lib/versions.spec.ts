@@ -4,7 +4,12 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { applyVersion, collectVersionProblems, repoRoot } from '../../scripts/versions.mjs';
+import {
+	applyVersion,
+	collectVersionProblems,
+	readApplicationVersion,
+	repoRoot
+} from '../../scripts/versions.mjs';
 
 /**
  * Files the checker reads. The Google Fonts snapshot is 2.5 MB of families the checker only reads
@@ -87,10 +92,11 @@ describe('collectVersionProblems', () => {
 	it('reports a changelog with no section for the version being built', () => {
 		const root = makeFixtureRoot();
 		const changelog = readFixture(root, 'CHANGELOG.md');
+		// Whichever release is newest, so bumping the version does not break this test.
 		writeFixture(
 			root,
 			'CHANGELOG.md',
-			changelog.replace(/^## \[0\.1\.4\].*$/m, '## [Unreleased]')
+			changelog.replace(/^## \[\d[^\]]*\].*$/m, '## [Unreleased]')
 		);
 
 		const problems = collectVersionProblems({ root });
@@ -131,11 +137,26 @@ describe('collectVersionProblems', () => {
 
 	it('refuses a tag that does not name the version being built', () => {
 		const root = makeFixtureRoot();
+		const version = readApplicationVersion(root);
 
-		expect(collectVersionProblems({ root, tag: 'v0.1.4' })).toEqual([]);
+		expect(collectVersionProblems({ root, tag: `v${version}` })).toEqual([]);
 		expect(collectVersionProblems({ root, tag: 'v0.2.0' })).toEqual([
-			{ file: 'git tag', message: 'v0.2.0 does not match the application version v0.1.4.' }
+			{
+				file: 'git tag',
+				message: `v0.2.0 does not match the application version v${version}.`
+			}
 		]);
+	});
+
+	// A Windows checkout with core.autocrlf hands every file back with CRLF, and the release
+	// workflow runs this check on a Windows runner, so no rule may assume a bare \n.
+	it('reads every file from a checkout with CRLF line endings', () => {
+		const root = makeFixtureRoot();
+		for (const relative of COPIED_FILES) {
+			writeFixture(root, relative, readFixture(root, relative).replace(/\r?\n/g, '\r\n'));
+		}
+
+		expect(collectVersionProblems({ root })).toEqual([]);
 	});
 });
 

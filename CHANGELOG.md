@@ -10,6 +10,8 @@ a bundled copy when you are offline.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-09-14
+
 ### Added
 
 - Discover can now remove fonts it installed. Open a family you have installed and Remove takes
@@ -21,9 +23,9 @@ a bundled copy when you are offline.
   has been swapped, moved, linked somewhere else or that Windows protects is left exactly where
   it is, and the app tells you which files it kept and why.
 - Removing a font does not delete it. The file is moved into a folder inside FontNest's own data,
-  so a removal that turns out to be wrong is a move back rather than a download. As with
-  installing, the whole removal is written down before it starts: if FontNest is closed or killed
-  halfway through, the next launch puts the fonts back.
+  so it is still on your computer if you change your mind, although the app has no button to put
+  it back yet. As with installing, the whole removal is written down before it starts: if FontNest
+  is closed or killed halfway through, the next launch puts the fonts back.
 
 ### Changed
 
@@ -276,7 +278,8 @@ on your computer.
   it has verified the signature.
 - Apache-2.0 license.
 
-[Unreleased]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/AlirezaKJ/Font-Nest/compare/v0.1.1...v0.1.2

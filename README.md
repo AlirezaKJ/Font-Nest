@@ -12,16 +12,17 @@ The first usable catalogue and online-install slices are now implemented:
 - Rust family/face catalogue DTOs generated into TypeScript by `ts-rs`
 - Dark and Light Quiet Ledger themes with OS-following and persisted preferences
 - Responsive font-family catalogue with live system-font previews
-- Immediate search plus source, format, monospaced, and conflict filters
+- Immediate search plus origin, format, technology (variable or static), spacing, and conflict filters
 - Connected inspector with editable specimen text, size, weight, face, format, and provenance details
 - Read-only potential-conflict view for repeated family/weight/style combinations across files
-- Safe preview-only file picker for `.otf`, `.ttf`, `.woff`, and `.woff2`
+- Safe preview-only file picker for `.ttf`, `.otf`, `.ttc`, and `.otc`
 - Discover screen backed by a pinned Google Fonts catalogue snapshot
 - On-demand previews that are downloaded, integrity-checked, parsed, and kept uninstalled
-- Confirmed per-user Windows installs with a Rust-owned SQLite management ledger and preserved licence files
+- Confirmed per-user Windows installs with a Rust-owned SQLite management ledger, crash recovery, and preserved licence files
+- Ownership-checked removal of FontNest-installed fonts that sets the files aside instead of deleting them
 - Loading, empty, error, keyboard, compact-density, and browser-development states
 
-Browser-only development uses clearly labelled sample data because native discovery and installation are available only inside Tauri. The desktop app bundles a complete, commit-pinned Google Fonts API snapshot that can be refreshed without shipping the API key. Catalogue persistence, streamed/virtualized installed-font batches, deeper metadata, and managed uninstall remain future milestones.
+Browser-only development uses clearly labelled sample data because native discovery and installation are available only inside Tauri. The desktop app bundles a complete, commit-pinned Google Fonts API snapshot that can be refreshed without shipping the API key. Catalogue persistence, streamed/virtualized installed-font batches, deeper metadata, and restoring removed fonts from inside the app remain future milestones.
 
 ## Development
 
