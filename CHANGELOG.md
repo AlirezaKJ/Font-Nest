@@ -10,6 +10,15 @@ a bundled copy when you are offline.
 
 ## [Unreleased]
 
+### Added
+
+- FontNest reopens where you left it. The window comes back at the size and position you gave it,
+  maximized if that is how you closed it, and the app returns to the view you were last on with
+  your search, filters, sort order and place in the list still there. If you closed it on a screen
+  that is no longer plugged in, it keeps the size and comes back on a screen you can see, rather
+  than opening somewhere you cannot reach it. A font you had open that has since been uninstalled
+  is not reopened, and you land on the library instead of an empty panel.
+
 ### Changed
 
 - FontNest now carries the two typefaces its interface is designed in, so the app looks the same

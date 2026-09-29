@@ -3,7 +3,7 @@ title: FontNest Todos
 type: todo
 status: active
 created: 2026-06-05
-updated: 2026-09-29
+updated: 2026-09-30
 tags:
     - project
     - todo
@@ -518,12 +518,12 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 
 - [ ] **P1** Add first-run onboarding for local scanning, provider network use, system protection, FontNest-managed ownership, and recovery.
 - [ ] **P1** Add first-scan phase/count/elapsed/progress/cancel/retry with a cached-catalogue path on later launches.
-- [ ] **P1** Restore last view, selected family, expanded row, scroll, filters, and preview session.
+- [x] **P1** Restore last view, selected family, expanded row, scroll, filters, and preview session. Done 2026-09-30: the session rides in the existing preferences record and is parsed by `src/lib/session.ts`, which checks every field on its own so one bad value drops instead of taking the session down with it. It is applied once, and only after a scan has finished: a family can be uninstalled between launches, so `reconcileSession` drops a selection the catalogue no longer has and sends a preview session that depended on it back to the library rather than reopening an empty panel. In the library the selected family is the expanded row, so both come back together, and the rendered page count is restored before the scroll position so the list is long enough to scroll into. One `$effect` writes the whole session through the existing debounce instead of a save call in every filter and toggle handler. Worth knowing for the next effect written here: the first version guarded with `if (!pendingSession || loading)` and restored nothing, because the short circuit meant `loading` was never read on the first run and no dependency was ever registered. Reactive reads come before the early return now.
 - [ ] **P1** Add a command palette for navigation, family lookup, filters, preview, collection, diagnostics, and settings actions.
 - [ ] **P1** Add native File/Edit/View/Window/Help menus, standard accelerators, About, release notes, Help, diagnostics, and report-issue entry points.
 - [ ] **P1** Add family/file context menus using familiar desktop actions.
 - [ ] **P1** Add view-change focus management, focus restoration after dialogs, and back/forward navigation history.
-- [ ] **P1** Persist window size, position, maximized state, and monitor; recover if a display disappears.
+- [x] **P1** Persist window size, position, maximized state, and monitor; recover if a display disappears. Done 2026-09-30: `window_state.rs` writes the rectangle to a versioned `window-state.json` beside the ledger, through a temporary file so a crash mid-write cannot leave half a document, and a version this build does not know is ignored the way the ledger refuses a schema from the future. Restoring is not a replay of the numbers: the saved rectangle is measured against the monitors attached now, and one that no longer puts a grabbable strip on any of them keeps its size and gives up its position instead of opening somewhere unreachable. The size is clamped to the largest monitor and to the window's own minimum, which is stated in logical pixels in `tauri.conf.json` and converted against the window's scale factor before it is compared with anything physical. Maximized is stored over the last ordinary rectangle, so a maximized window still has somewhere sensible to go when it is restored down, and a minimized window's off-desktop position is never recorded. Restoring happens before the window is shown, so it is not a visible jump. Seventeen tests cover the geometry decisions and the file; the one that mattered most was running it: the first version saved `outer_size` and restored it with `set_size`, which sets the inner size, so the window shrank by the frame on every single launch until it was measured across three.
 - [ ] **P1** Verify Snap Layouts, double-click maximize, Alt+Space, keyboard window controls, high-contrast captions, and multi-monitor DPI with the custom title bar.
 - [ ] **P2** Add configurable keyboard shortcuts with collision detection and visible menu/tooltip hints.
 - [ ] **P3** Evaluate detachable preview/compare windows while reusing existing Tauri windows.

@@ -14,6 +14,7 @@ mod managed_recovery;
 mod managed_storage;
 mod managed_uninstall;
 mod release_notes;
+mod window_state;
 
 /// Starts the `FontNest` desktop application.
 ///
@@ -28,6 +29,7 @@ pub fn run() {
         .manage(commands::CatalogueState::default())
         .manage(commands::ParserExports::default())
         .manage(local_fonts::PreviewStore::default())
+        .manage(window_state::Tracker::default())
         // Serves validated local-font bytes to the WebView by opaque handle only.
         // The registry never exposes a filesystem path, and an unknown or malformed
         // handle yields 404, so nothing but already-validated fonts can be loaded.
@@ -67,6 +69,9 @@ pub fn run() {
                     .expect("an empty error response always builds")
             })
         })
+        .on_window_event(|window, event| {
+            window_state::handle_window_event(window, event);
+        })
         .setup(|app| {
             use tauri::Manager;
 
@@ -88,6 +93,13 @@ pub fn run() {
                         .level(log::LevelFilter::Info)
                         .build(),
                 )?;
+            }
+
+            // Put the window back where it was left, before it is shown, so restoring it is
+            // not a visible jump. A rectangle that no longer lands on a monitor keeps its size
+            // and gives up its position; see `window_state`.
+            if let Some(window) = app.get_webview_window("main") {
+                window_state::restore(&window, &app_data_dir);
             }
 
             // The main window launches hidden so the WebView's blank white background is

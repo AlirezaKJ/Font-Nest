@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getCurrentWindow } from '@tauri-apps/api/window';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { quintOut } from 'svelte/easing';
 	import { slide } from 'svelte/transition';
 
@@ -41,6 +41,13 @@
 	import { importLocalFontPreview, releaseLocalFontPreview } from '$lib/fonts/local-fonts';
 	import { hasUnseenRelease } from '$lib/release-notes/loader';
 	import { reorderIds, type ReorderPosition } from '$lib/reorder';
+	import {
+		parseSession,
+		reconcileSession,
+		restorableSortOrder,
+		restorableView,
+		type Session
+	} from '$lib/session';
 	import { isStickySurfaceElevated } from '$lib/sticky-surface';
 	import { fontFaceFilePath, revealFontFaceFile, scanInstalledFonts } from '$lib/tauri/commands';
 
@@ -114,6 +121,67 @@
 		if (view !== 'library') libraryControlsElevated = false;
 	});
 
+	// Everything the session holds, written back through the same debounced path the specimen
+	// text uses. One effect beats a save call at every filter, toggle and scroll handler.
+	$effect(() => {
+		void [
+			view,
+			selectedFamilyId,
+			search,
+			originFilter,
+			formatFilter,
+			technologyFilter,
+			spacingFilter,
+			statusFilter,
+			sortOrder,
+			specimenMode,
+			specimenSize,
+			specimenWeight,
+			previewSize,
+			previewWeight,
+			displayLimit
+		];
+		// Until the stored session has been applied, the values above are still defaults and
+		// writing them would throw away what the last session left.
+		if (pendingSession) return;
+		queuePreferencesSave();
+	});
+
+	// The stored session is applied once, and only after a catalogue exists to check it against:
+	// a family can be uninstalled between one launch and the next, and reopening the preview of a
+	// font that is no longer installed would be a blank panel with nothing to explain it.
+	$effect(() => {
+		// Read what this depends on before anything can return early. A guard that short-circuits
+		// ahead of a reactive read registers no dependency on it, and the effect then never runs
+		// again: the first version of this restored nothing at all for that reason.
+		const scanning = loading;
+		const scanned = catalogue;
+		if (!pendingSession || scanning) return;
+		if (!scanned) {
+			// The scan failed. There is nothing to check a saved family against, so let the
+			// session go rather than holding every later write hostage to it.
+			pendingSession = null;
+			return;
+		}
+		const families = scanned.families;
+		const session = reconcileSession(pendingSession, (familyId) =>
+			families.some((family) => family.id === familyId)
+		);
+		pendingSession = null;
+
+		selectedFamilyId = session.selectedFamilyId ?? null;
+		if (session.displayLimit !== undefined) {
+			displayLimit = Math.max(displayLimit, session.displayLimit);
+		}
+		if (session.view) view = session.view;
+
+		const scrollTop = session.scrollTop ?? 0;
+		if (session.view !== 'library' || scrollTop <= 0) return;
+		// Wait for the rows to exist before scrolling past them, or the container clamps the
+		// position to whatever short list has rendered so far.
+		void tick().then(() => libraryScrollElement?.scrollTo({ top: scrollTop }));
+	});
+
 	$effect(() => {
 		if (typeof window === 'undefined') return;
 		const query = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -156,6 +224,10 @@
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
 	let updateCheckTimer: ReturnType<typeof setTimeout> | undefined;
 	let preferencesTimer: ReturnType<typeof setTimeout> | null = null;
+	// Where the last session left off, held until a catalogue exists to check it against, then
+	// applied once. A family can be uninstalled between launches, so nothing is taken on trust.
+	let pendingSession = $state<Partial<Session> | null>(null);
+	let libraryScrollElement = $state<HTMLElement>();
 
 	let originOptions = $derived.by<DiscoverFilterOption[]>(() => {
 		const present = new Set(catalogue?.families.flatMap((family) => family.origins) ?? []);
@@ -345,6 +417,7 @@
 				previewText?: string;
 				sidebarCollapsed?: boolean;
 				pinnedFamilyIds?: unknown;
+				session?: unknown;
 			};
 			if (saved.theme && ['system', 'light', 'dark'].includes(saved.theme))
 				theme = saved.theme;
@@ -355,6 +428,26 @@
 			if (saved.previewText?.trim()) previewText = saved.previewText;
 			if (typeof saved.sidebarCollapsed === 'boolean') {
 				sidebarCollapsed = saved.sidebarCollapsed;
+			}
+			pendingSession = parseSession(saved.session);
+			if (pendingSession.search !== undefined) search = pendingSession.search;
+			if (pendingSession.filters) {
+				originFilter = pendingSession.filters.origin;
+				formatFilter = pendingSession.filters.format;
+				technologyFilter = pendingSession.filters.technology;
+				spacingFilter = pendingSession.filters.spacing;
+				statusFilter = pendingSession.filters.status;
+			}
+			if (pendingSession.sortOrder) sortOrder = pendingSession.sortOrder;
+			if (pendingSession.specimenMode) specimenMode = pendingSession.specimenMode;
+			if (pendingSession.specimenSize !== undefined)
+				specimenSize = pendingSession.specimenSize;
+			if (pendingSession.specimenWeight !== undefined) {
+				specimenWeight = pendingSession.specimenWeight;
+			}
+			if (pendingSession.previewSize !== undefined) previewSize = pendingSession.previewSize;
+			if (pendingSession.previewWeight !== undefined) {
+				previewWeight = pendingSession.previewWeight;
 			}
 			if (Array.isArray(saved.pinnedFamilyIds)) {
 				pinnedFamilyIds = [
@@ -384,7 +477,27 @@
 				focusOutlines,
 				previewText,
 				sidebarCollapsed,
-				pinnedFamilyIds
+				pinnedFamilyIds,
+				session: {
+					view: restorableView(view),
+					selectedFamilyId,
+					search,
+					filters: {
+						origin: originFilter,
+						format: formatFilter,
+						technology: technologyFilter,
+						spacing: spacingFilter,
+						status: statusFilter
+					},
+					sortOrder: restorableSortOrder(sortOrder),
+					specimenMode,
+					specimenSize,
+					specimenWeight,
+					previewSize,
+					previewWeight,
+					displayLimit,
+					scrollTop: libraryScrollElement?.scrollTop ?? 0
+				} satisfies Session
 			})
 		);
 	}
@@ -890,6 +1003,7 @@
 			<section
 				class="library-view"
 				aria-labelledby="library-title"
+				bind:this={libraryScrollElement}
 				onscroll={handleLibraryScroll}
 			>
 				<header class="library-header">
