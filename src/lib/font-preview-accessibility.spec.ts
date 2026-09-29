@@ -8,7 +8,7 @@ describe('font preview accessibility', () => {
 		const source = readFileSync(componentPath, 'utf8');
 
 		expect(source).toContain(
-			'aria-label={`${selectedGlyph} ${glyphViewMode} view aligned to the font\'s cap height, x-height, baseline, and descender`}'
+			"aria-label={`${selectedGlyph} ${glyphViewMode} view aligned to the font's cap height, x-height, baseline, and descender`}"
 		);
 		expect(source).not.toContain(
 			'<title>{selectedGlyph} font metrics in {glyphViewMode} view</title>'

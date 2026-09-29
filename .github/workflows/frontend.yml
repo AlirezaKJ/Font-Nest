@@ -1,0 +1,48 @@
+name: Frontend checks
+
+# The Rust side has had a gate since the start and the frontend has had none, so formatting, lint
+# and type errors only showed up when somebody happened to run `pnpm verify`. That is also how the
+# lint baseline went dirty and stayed dirty. Windows on purpose: `.gitattributes` is what keeps a
+# checkout on LF where `core.autocrlf` would otherwise convert it, and only a Windows runner can
+# prove that still works.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Format, lint, type-check, and test on Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      # pnpm reads packageManager and Node reads engines.node, so neither repeats a version this
+      # repository already pins.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting and lint
+        run: pnpm lint
+
+      - name: Type-check
+        run: pnpm check
+
+      - name: Test
+        run: pnpm test

@@ -65,12 +65,37 @@ const CATEGORY_RULES: GlyphCategoryRule[] = [
 		description: 'Latin titlecase, phonetic, modifier, and uncased characters',
 		matches: (character) => LATIN.test(character)
 	},
-	scriptRule('greek', 'Greek and Coptic', 'Greek, polytonic, and Coptic characters', /\p{Script=Greek}/u),
-	scriptRule('cyrillic', 'Cyrillic', 'Cyrillic letters and language extensions', /\p{Script=Cyrillic}/u),
+	scriptRule(
+		'greek',
+		'Greek and Coptic',
+		'Greek, polytonic, and Coptic characters',
+		/\p{Script=Greek}/u
+	),
+	scriptRule(
+		'cyrillic',
+		'Cyrillic',
+		'Cyrillic letters and language extensions',
+		/\p{Script=Cyrillic}/u
+	),
 	scriptRule('armenian', 'Armenian', 'Armenian letters and marks', /\p{Script=Armenian}/u),
-	scriptRule('hebrew', 'Hebrew', 'Hebrew letters, points, and presentation forms', /\p{Script=Hebrew}/u),
-	scriptRule('arabic', 'Arabic', 'Arabic letters, marks, digits, and presentation forms', /\p{Script=Arabic}/u),
-	scriptRule('devanagari', 'Devanagari', 'Devanagari letters, marks, and digits', /\p{Script=Devanagari}/u),
+	scriptRule(
+		'hebrew',
+		'Hebrew',
+		'Hebrew letters, points, and presentation forms',
+		/\p{Script=Hebrew}/u
+	),
+	scriptRule(
+		'arabic',
+		'Arabic',
+		'Arabic letters, marks, digits, and presentation forms',
+		/\p{Script=Arabic}/u
+	),
+	scriptRule(
+		'devanagari',
+		'Devanagari',
+		'Devanagari letters, marks, and digits',
+		/\p{Script=Devanagari}/u
+	),
 	{
 		key: 'south-southeast-asian',
 		label: 'South and Southeast Asian scripts',
@@ -80,11 +105,26 @@ const CATEGORY_RULES: GlyphCategoryRule[] = [
 				character
 			)
 	},
-	scriptRule('georgian', 'Georgian', 'Georgian letters and historic forms', /\p{Script=Georgian}/u),
+	scriptRule(
+		'georgian',
+		'Georgian',
+		'Georgian letters and historic forms',
+		/\p{Script=Georgian}/u
+	),
 	scriptRule('hiragana', 'Hiragana', 'Hiragana letters and marks', /\p{Script=Hiragana}/u),
 	scriptRule('katakana', 'Katakana', 'Katakana letters and marks', /\p{Script=Katakana}/u),
-	scriptRule('hangul', 'Hangul', 'Hangul syllables, jamo, and compatibility forms', /\p{Script=Hangul}/u),
-	scriptRule('han', 'Han ideographs', 'CJK unified, compatibility, and extension ideographs', /\p{Script=Han}/u),
+	scriptRule(
+		'hangul',
+		'Hangul',
+		'Hangul syllables, jamo, and compatibility forms',
+		/\p{Script=Hangul}/u
+	),
+	scriptRule(
+		'han',
+		'Han ideographs',
+		'CJK unified, compatibility, and extension ideographs',
+		/\p{Script=Han}/u
+	),
 	{
 		key: 'letterlike',
 		label: 'Letterlike and enclosed forms',
@@ -200,7 +240,14 @@ export function groupUnicodeCodepoints(codepoints: readonly number[]): GlyphCate
 	return CATEGORY_RULES.flatMap((rule) => {
 		const groupedCodepoints = groups.get(rule.key) ?? [];
 		return groupedCodepoints.length
-			? [{ key: rule.key, label: rule.label, description: rule.description, codepoints: groupedCodepoints }]
+			? [
+					{
+						key: rule.key,
+						label: rule.label,
+						description: rule.description,
+						codepoints: groupedCodepoints
+					}
+				]
 			: [];
 	});
 }
@@ -218,7 +265,10 @@ export function filterGlyphSetCodepoints(
 }
 
 export function formatCodepoint(codepoint: number): string {
-	return `U+${codepoint.toString(16).toUpperCase().padStart(codepoint <= 0xffff ? 4 : 6, '0')}`;
+	return `U+${codepoint
+		.toString(16)
+		.toUpperCase()
+		.padStart(codepoint <= 0xffff ? 4 : 6, '0')}`;
 }
 
 export function glyphCellText(codepoint: number): string {

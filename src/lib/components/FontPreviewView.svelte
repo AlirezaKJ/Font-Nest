@@ -64,6 +64,7 @@
 
 <script lang="ts">
 	import { quintOut } from 'svelte/easing';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { slide } from 'svelte/transition';
 
 	import type { FontFaceInspection } from '$lib/bindings/FontFaceInspection';
@@ -147,7 +148,7 @@
 	let glyphOutline = $state<FontGlyphOutline | null>(null);
 	let glyphOutlineLoading = $state(false);
 	let glyphOutlineError = $state('');
-	let expandedGlyphCategories = $state<Set<string>>(new Set());
+	const expandedGlyphCategories = new SvelteSet<string>();
 	let glyphCategoryLimits = $state<Record<string, number>>({});
 	let glyphCoverageFaceId = $state<string | null>(null);
 	let prefersReducedMotion = $state(false);
@@ -167,6 +168,10 @@
 	const parserPreviewText = $derived(parserJsonText.slice(0, PARSER_PREVIEW_CHARS));
 	const parserTruncationNote = $derived(parserExportTruncationNote(parserExport));
 	const parserProgress = $derived(parserExportProgress(parserExport));
+	// Deliberately a plain Map, not a SvelteMap: the outline effect reads this cache and then
+	// writes the fetched outline back into it, so a reactive map would make the effect depend on
+	// its own write and re-run for every glyph it caches. Nothing renders from the cache directly.
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity
 	const glyphOutlineCache = new Map<string, FontGlyphOutline>();
 
 	let specimenEl = $state<HTMLElement>();
@@ -464,6 +469,9 @@
 			document.activeElement !== specimenEl &&
 			specimenEl.textContent !== text
 		) {
+			// Writing textContent by hand is the point: `bind:textContent` would write on every
+			// keystroke and move the caret, and the guard above is what keeps it out of an edit.
+			// eslint-disable-next-line svelte/no-dom-manipulating
 			specimenEl.textContent = text;
 		}
 	});
@@ -572,7 +580,7 @@
 		const coverageKey = faceId ? `${faceId}:${glyphSetScope}` : null;
 		if (!coverageKey || coverageKey === glyphCoverageFaceId) return;
 		glyphCoverageFaceId = coverageKey;
-		expandedGlyphCategories = new Set();
+		expandedGlyphCategories.clear();
 		glyphCategoryLimits = {};
 	});
 
@@ -687,16 +695,14 @@
 	}
 
 	function toggleGlyphCategory(key: string) {
-		const next = new Set(expandedGlyphCategories);
-		if (next.has(key)) {
-			next.delete(key);
-		} else {
-			next.add(key);
-			if (glyphCategoryLimits[key] === undefined) {
-				glyphCategoryLimits = { ...glyphCategoryLimits, [key]: INITIAL_GLYPH_BATCH };
-			}
+		if (expandedGlyphCategories.has(key)) {
+			expandedGlyphCategories.delete(key);
+			return;
 		}
-		expandedGlyphCategories = next;
+		expandedGlyphCategories.add(key);
+		if (glyphCategoryLimits[key] === undefined) {
+			glyphCategoryLimits = { ...glyphCategoryLimits, [key]: INITIAL_GLYPH_BATCH };
+		}
 	}
 
 	function showMoreGlyphs(key: string, total: number) {

@@ -10,17 +10,7 @@ import {
 describe('groupUnicodeCodepoints', () => {
 	it('classifies familiar scripts and symbol series', () => {
 		const groups = groupUnicodeCodepoints([
-			0x41,
-			0x61,
-			0x31,
-			0x21,
-			0x20ac,
-			0x2192,
-			0x03a9,
-			0x0416,
-			0x1f600,
-			0xe000,
-			0x0301
+			0x41, 0x61, 0x31, 0x21, 0x20ac, 0x2192, 0x03a9, 0x0416, 0x1f600, 0xe000, 0x0301
 		]);
 		const byKey = new Map(groups.map((group) => [group.key, group.codepoints]));
 
@@ -53,12 +43,7 @@ describe('filterGlyphSetCodepoints', () => {
 
 		expect(filterGlyphSetCodepoints(input, 'basic')).toEqual([0x20, 0x41, 0x7e]);
 		expect(filterGlyphSetCodepoints(input, 'full')).toEqual([
-			0x1f,
-			0x20,
-			0x41,
-			0x7e,
-			0x7f,
-			0x1f600
+			0x1f, 0x20, 0x41, 0x7e, 0x7f, 0x1f600
 		]);
 	});
 });

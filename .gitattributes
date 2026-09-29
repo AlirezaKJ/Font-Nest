@@ -1,0 +1,30 @@
+# FontNest stores every text file with LF and checks it out with LF on every platform,
+# whatever `core.autocrlf` is set to on the machine doing the checkout. Everything that writes
+# files here already writes LF (Prettier, .editorconfig, and the ts-rs binding generator), so a
+# CRLF working tree only ever produced noise: `pnpm lint` failed on line endings alone for 91
+# files, regenerated bindings showed up as modified with an empty diff, and a regex written with
+# a bare `\n` could pass locally and fail the release build.
+* text=auto eol=lf
+
+# Declared rather than sniffed, so a font or an icon is never rewritten on its way in or out.
+*.ttf   binary
+*.otf   binary
+*.ttc   binary
+*.otc   binary
+*.woff  binary
+*.woff2 binary
+*.pfb   binary
+*.dfont binary
+*.png   binary
+*.ico   binary
+*.icns  binary
+*.webp  binary
+*.pdf   binary
+*.zip   binary
+*.msi   binary
+*.exe   binary
+
+# Generated from Rust by ts-rs, and a 2.5 MB data snapshot: both are reviewed by regenerating
+# them, not by reading a diff.
+/src/lib/bindings/*.ts linguist-generated=true
+/src-tauri/resources/google-fonts.json linguist-generated=true
