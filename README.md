@@ -35,6 +35,8 @@ pnpm desktop
 
 Use `pnpm dev` for a browser-only UI preview. The interface uses labelled sample data in that mode; run `pnpm desktop` to scan the fonts installed on the computer.
 
+Both commands prefer port 5173 and move to the next free one when something else already has it, so a second checkout or another project's dev server does not stop them. `pnpm desktop` says which port it picked and points the window at that same server.
+
 ### Refresh the Google Fonts catalogue
 
 The API key is used only by the build-time refresh script. It is never embedded in FontNest or needed by app users.
