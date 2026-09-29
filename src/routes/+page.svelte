@@ -1075,7 +1075,7 @@
 					{:else if !catalogue?.familyCount}
 						<div class="catalogue-state">
 							<div class="state-icon"><Icon name="font" size={20} /></div>
-							<h2>No installed fonts found</h2>
+							<h2 class="type-display">No installed fonts found</h2>
 							<p>
 								Scan again, or open a font file to preview it without installing
 								anything.
@@ -2116,9 +2116,14 @@
 		color: var(--color-danger);
 	}
 
-	.catalogue-state h2 {
+	/* The display-set state brings its own size from .type-display; the rest stay small. */
+	.catalogue-state h2:not(.type-display) {
 		margin-bottom: 0;
 		font-size: var(--text-heading-sm);
+	}
+
+	.catalogue-state h2.type-display {
+		margin-bottom: 0;
 	}
 
 	.catalogue-state p {

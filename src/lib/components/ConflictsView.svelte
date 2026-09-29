@@ -72,7 +72,7 @@
 	{:else}
 		<div class="empty-state">
 			<div class="empty-icon"><Icon name="check" size={23} /></div>
-			<h2>No potential conflicts found</h2>
+			<h2 class="type-display">No potential conflicts found</h2>
 			<p>
 				The current catalogue does not contain repeated family, weight, and style
 				combinations across multiple files.
@@ -165,11 +165,17 @@
 		background: var(--color-panel);
 	}
 
-	h2 {
+	/* Family names and panel titles. The display-set empty state brings its own size and
+	   spacing, so it is excluded rather than overridden. */
+	h2:not(.type-display) {
 		margin: 0;
 		font-size: var(--text-title);
 		line-height: 1.3;
 		letter-spacing: -0.015em;
+	}
+
+	h2.type-display {
+		margin: 0 0 var(--space-xs);
 	}
 
 	.conflict-summary p {

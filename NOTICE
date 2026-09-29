@@ -1,2 +1,19 @@
 FontNest
 Copyright 2026 FontNest contributors
+
+This product bundles the following third-party fonts, used for FontNest's own
+interface. They are not part of the user's font catalogue, and FontNest never
+installs, exports, or offers them for installation.
+
+Geist
+Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font)
+Licensed under the SIL Open Font License, Version 1.1.
+Variable build taken from @fontsource-variable/geist 5.3.0.
+Full licence: static/fonts/geist-OFL.txt
+
+Instrument Serif
+Copyright 2022 The Instrument Serif Project Authors
+(https://github.com/Instrument/instrument-serif)
+Licensed under the SIL Open Font License, Version 1.1.
+Taken from @fontsource/instrument-serif 5.3.0.
+Full licence: static/fonts/instrument-serif-OFL.txt

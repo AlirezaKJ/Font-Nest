@@ -61,6 +61,8 @@ describe('Tauri window configuration', () => {
 		const fontSrc = /font-src ([^;]*)/.exec(config.app?.security?.csp ?? '')?.[1]?.trim();
 
 		expect(fontSrc).toBeDefined();
+		// 'self' is what lets the interface's own bundled WOFF2 files load.
+		expect(fontSrc?.split(/\s+/)).toContain("'self'");
 		expect(fontSrc?.split(/\s+/)).toContain('http://fontnest-preview.localhost');
 		expect(fontSrc).not.toContain('data:');
 	});

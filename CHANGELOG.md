@@ -10,6 +10,15 @@ a bundled copy when you are offline.
 
 ## [Unreleased]
 
+### Changed
+
+- FontNest now carries the two typefaces its interface is designed in, so the app looks the same
+  on every machine instead of falling back to whatever Windows happens to have installed. Geist
+  arrives as a variable font, so the weights the interface asks for are the weights you see, and a
+  face labelled italic is set in a real italic rather than a slanted copy. The quiet moments, no
+  fonts found and no conflicts found, are set in Instrument Serif. Nothing here needs a network
+  connection, and neither typeface joins your catalogue or can be installed from it.
+
 ## [0.1.5] - 2026-09-14
 
 ### Added
