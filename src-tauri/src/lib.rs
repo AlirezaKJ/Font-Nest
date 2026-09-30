@@ -13,6 +13,7 @@ mod managed_ownership;
 mod managed_recovery;
 mod managed_storage;
 mod managed_uninstall;
+mod preferences;
 mod release_notes;
 mod window_state;
 
@@ -136,6 +137,8 @@ pub fn run() {
             commands::install_google_font,
             commands::uninstall_google_font,
             commands::managed_storage_status,
+            commands::load_preferences,
+            commands::save_preferences,
             commands::fetch_remote_changelog,
             commands::check_for_app_update,
             commands::install_app_update

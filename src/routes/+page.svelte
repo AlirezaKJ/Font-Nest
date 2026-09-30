@@ -48,6 +48,7 @@
 		restorableView,
 		type Session
 	} from '$lib/session';
+	import * as preferencesStore from '$lib/preferences/store';
 	import { isStickySurfaceElevated } from '$lib/sticky-surface';
 	import { fontFaceFilePath, revealFontFaceFile, scanInstalledFonts } from '$lib/tauri/commands';
 
@@ -70,7 +71,6 @@
 	};
 	const MAX_DETAIL_FACES = 12;
 	const UPDATE_CHECK_DELAY_MS = 8_000;
-	const PREFERENCES_KEY = 'fontnest.preferences.v1';
 	const PREFERENCES_SAVE_DELAY_MS = 400;
 	// Saved family IDs from before opaque IDs shipped can never match a family again, so they are
 	// dropped on load rather than carried forever in the preference blob.
@@ -224,6 +224,8 @@
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
 	let updateCheckTimer: ReturnType<typeof setTimeout> | undefined;
 	let preferencesTimer: ReturnType<typeof setTimeout> | null = null;
+	// One toast is enough when the store itself is failing.
+	let preferencesWriteFailed = false;
 	// Where the last session left off, held until a catalogue exists to check it against, then
 	// applied once. A family can be uninstalled between launches, so nothing is taken on trust.
 	let pendingSession = $state<Partial<Session> | null>(null);
@@ -346,10 +348,11 @@
 	);
 
 	onMount(() => {
-		loadPreferences();
 		applyTheme();
 		applyFocusOutlines();
-		revealWindow();
+		// The window is hidden until this resolves, so reading the settings over IPC costs a
+		// few milliseconds of hidden window rather than a flash of the wrong theme.
+		void loadStoredPreferences().finally(revealWindow);
 
 		const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
 		const handleColorScheme = () => {
@@ -408,59 +411,51 @@
 		};
 	});
 
-	function loadPreferences() {
-		try {
-			const saved = JSON.parse(localStorage.getItem(PREFERENCES_KEY) ?? '{}') as {
-				theme?: ThemePreference;
-				density?: DensityPreference;
-				focusOutlines?: boolean;
-				previewText?: string;
-				sidebarCollapsed?: boolean;
-				pinnedFamilyIds?: unknown;
-				session?: unknown;
-			};
-			if (saved.theme && ['system', 'light', 'dark'].includes(saved.theme))
-				theme = saved.theme;
-			if (saved.density && ['comfortable', 'compact'].includes(saved.density)) {
-				density = saved.density;
-			}
-			if (typeof saved.focusOutlines === 'boolean') focusOutlines = saved.focusOutlines;
-			if (saved.previewText?.trim()) previewText = saved.previewText;
-			if (typeof saved.sidebarCollapsed === 'boolean') {
-				sidebarCollapsed = saved.sidebarCollapsed;
-			}
-			pendingSession = parseSession(saved.session);
-			if (pendingSession.search !== undefined) search = pendingSession.search;
-			if (pendingSession.filters) {
-				originFilter = pendingSession.filters.origin;
-				formatFilter = pendingSession.filters.format;
-				technologyFilter = pendingSession.filters.technology;
-				spacingFilter = pendingSession.filters.spacing;
-				statusFilter = pendingSession.filters.status;
-			}
-			if (pendingSession.sortOrder) sortOrder = pendingSession.sortOrder;
-			if (pendingSession.specimenMode) specimenMode = pendingSession.specimenMode;
-			if (pendingSession.specimenSize !== undefined)
-				specimenSize = pendingSession.specimenSize;
-			if (pendingSession.specimenWeight !== undefined) {
-				specimenWeight = pendingSession.specimenWeight;
-			}
-			if (pendingSession.previewSize !== undefined) previewSize = pendingSession.previewSize;
-			if (pendingSession.previewWeight !== undefined) {
-				previewWeight = pendingSession.previewWeight;
-			}
-			if (Array.isArray(saved.pinnedFamilyIds)) {
-				pinnedFamilyIds = [
-					...new Set(
-						saved.pinnedFamilyIds.filter(
-							(value): value is string =>
-								typeof value === 'string' && FAMILY_ID_PATTERN.test(value)
-						)
-					)
-				];
-			}
-		} catch {
-			localStorage.removeItem(PREFERENCES_KEY);
+	/**
+	 * Reads the settings FontNest owns, applies what is still valid, and says nothing when there
+	 * is nothing stored. Values are checked here as well as in the store: the desktop side bounds
+	 * what a document can hold, and this decides what this interface is willing to show.
+	 */
+	async function loadStoredPreferences() {
+		const loaded = await preferencesStore.load();
+		const saved = loaded.preferences;
+
+		theme = saved.theme;
+		density = saved.density;
+		focusOutlines = saved.focusOutlines;
+		if (saved.previewText.trim()) previewText = saved.previewText;
+		sidebarCollapsed = saved.sidebarCollapsed;
+		pinnedFamilyIds = [
+			...new Set(saved.pinnedFamilyIds.filter((value) => FAMILY_ID_PATTERN.test(value)))
+		];
+
+		pendingSession = parseSession(saved.session);
+		if (pendingSession.search !== undefined) search = pendingSession.search;
+		if (pendingSession.filters) {
+			originFilter = pendingSession.filters.origin;
+			formatFilter = pendingSession.filters.format;
+			technologyFilter = pendingSession.filters.technology;
+			spacingFilter = pendingSession.filters.spacing;
+			statusFilter = pendingSession.filters.status;
+		}
+		if (pendingSession.sortOrder) sortOrder = pendingSession.sortOrder;
+		if (pendingSession.specimenMode) specimenMode = pendingSession.specimenMode;
+		if (pendingSession.specimenSize !== undefined) specimenSize = pendingSession.specimenSize;
+		if (pendingSession.specimenWeight !== undefined) {
+			specimenWeight = pendingSession.specimenWeight;
+		}
+		if (pendingSession.previewSize !== undefined) previewSize = pendingSession.previewSize;
+		if (pendingSession.previewWeight !== undefined) {
+			previewWeight = pendingSession.previewWeight;
+		}
+
+		applyTheme();
+		applyFocusOutlines();
+
+		// Settings that could not be read are not a silent event: the defaults on screen are not
+		// what the person left, and they deserve to know why.
+		if (loaded.recovery !== null) {
+			showToast('FontNest could not read your saved settings, so it started fresh.', 'error');
 		}
 	}
 
@@ -469,9 +464,8 @@
 			clearTimeout(preferencesTimer);
 			preferencesTimer = null;
 		}
-		localStorage.setItem(
-			PREFERENCES_KEY,
-			JSON.stringify({
+		void preferencesStore
+			.save({
 				theme,
 				density,
 				focusOutlines,
@@ -499,7 +493,14 @@
 					scrollTop: libraryScrollElement?.scrollTop ?? 0
 				} satisfies Session
 			})
-		);
+			.catch((error: unknown) => {
+				// One complaint is enough: a failing store would otherwise interrupt on every
+				// keystroke that touches a setting.
+				if (!preferencesWriteFailed) {
+					preferencesWriteFailed = true;
+					showToast(commandErrorMessage(error), 'error');
+				}
+			});
 	}
 
 	// Specimen text changes on every keystroke. Serializing the whole preference blob

@@ -21,6 +21,14 @@ a bundled copy when you are offline.
 
 ### Changed
 
+- Your settings are FontNest's own now, not the web view's. They used to live in browser storage,
+  which meant no version, no repair, and nothing to stop them vanishing if that storage was ever
+  cleared. FontNest keeps them in its own file beside the font ledger, written the same careful
+  way: an interrupted write cannot leave half a file, a file it cannot read is set aside rather
+  than deleted and the app tells you it started fresh, and settings written by a newer version are
+  left alone instead of overwritten. Your existing settings move across the first time you open
+  this version, so there is nothing to redo.
+
 - FontNest now carries the two typefaces its interface is designed in, so the app looks the same
   on every machine instead of falling back to whatever Windows happens to have installed. Geist
   arrives as a variable font, so the weights the interface asks for are the weights you see, and a

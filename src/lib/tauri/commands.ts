@@ -14,7 +14,9 @@ import type { GoogleFontPage } from '$lib/bindings/GoogleFontPage';
 import type { GoogleFontPageRequest } from '$lib/bindings/GoogleFontPageRequest';
 import type { GoogleFontPreview } from '$lib/bindings/GoogleFontPreview';
 import type { GoogleFontUninstallResult } from '$lib/bindings/GoogleFontUninstallResult';
+import type { LoadedPreferences } from '$lib/bindings/LoadedPreferences';
 import type { ManagedStorageStatus } from '$lib/bindings/ManagedStorageStatus';
+import type { Preferences } from '$lib/bindings/Preferences';
 import type { ValidatedLocalFont } from '$lib/bindings/ValidatedLocalFont';
 
 export function scanInstalledFonts(): Promise<FontCatalogue> {
@@ -126,4 +128,17 @@ export function installAppUpdate(
 	const channel = new Channel<AppUpdateEvent>();
 	channel.onmessage = onEvent;
 	return invoke<void>('install_app_update', { expectedVersion, onEvent: channel });
+}
+
+/**
+ * Reads the settings FontNest owns. Never rejects: unreadable settings come back as the defaults
+ * with a reason, because an interface that will not start over a stored preference is worse than
+ * one that starts fresh and says so.
+ */
+export function loadPreferences(): Promise<LoadedPreferences> {
+	return invoke<LoadedPreferences>('load_preferences');
+}
+
+export function savePreferences(preferences: Preferences): Promise<void> {
+	return invoke<void>('save_preferences', { preferences });
 }

@@ -20,6 +20,7 @@ use crate::google_fonts::{self, GoogleFontsError};
 use crate::local_fonts::{self, LocalFontError};
 use crate::managed_installations::ManagedInstallationRepository;
 use crate::managed_storage::ManagedStorage;
+use crate::preferences::{self, LoadedPreferences, Preferences};
 use crate::release_notes::{self, ReleaseNotesError};
 
 const MAX_GLYPH_VARIATIONS: usize = 64;
@@ -519,6 +520,40 @@ pub async fn prepare_google_font_preview(
     google_fonts::prepare_preview(&artifact_id, &cache_dir, &store)
         .await
         .map_err(map_google_fonts_error)
+}
+
+/// Reads the settings this application owns.
+///
+/// Never fails: unreadable settings are recovered from rather than reported as an error, because
+/// an interface that cannot start because of a stored preference is worse than one that starts
+/// with the defaults and says so.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub fn load_preferences(app: tauri::AppHandle) -> LoadedPreferences {
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
+        return LoadedPreferences {
+            preferences: Preferences::default(),
+            recovery: None,
+        };
+    };
+    preferences::load(&app_data_dir)
+}
+
+/// Writes the settings this application owns.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub fn save_preferences(
+    preferences: Preferences,
+    app: tauri::AppHandle,
+) -> Result<(), CommandError> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| CommandError::preferences_unavailable())?;
+    preferences::save(&app_data_dir, &preferences).map_err(|error| {
+        log::warn!("FontNest could not write its settings: {error}");
+        CommandError::preferences_unavailable()
+    })
 }
 
 /// Reports whether managed font operations are available in this session, so the interface can

@@ -510,6 +510,13 @@ impl CommandError {
         }
     }
 
+    pub const fn preferences_unavailable() -> Self {
+        Self {
+            code: "preferences_unavailable",
+            message: "FontNest could not save your settings. They will apply until you quit.",
+        }
+    }
+
     pub const fn update_check_failed() -> Self {
         Self {
             code: "update_check_failed",
