@@ -784,20 +784,39 @@ fn saturating_u32(value: u64) -> u32 {
 
 fn ensure_trusted_window(window: &tauri::WebviewWindow) -> Result<(), CommandError> {
     let url = window.url().map_err(|_| CommandError::untrusted_origin())?;
-    if is_trusted_app_origin(&url) {
+    if is_trusted_app_origin(&url, development_origin_for(window.app_handle())) {
         Ok(())
     } else {
         Err(CommandError::untrusted_origin())
     }
 }
 
-/// True when an `Origin` header names the app's own web view. The internal preview
-/// protocol grants cross-origin read access to that origin and nothing else.
-pub(crate) fn is_trusted_origin_header(value: &str) -> bool {
-    tauri::Url::parse(value).is_ok_and(|url| is_trusted_app_origin(&url))
+/// The origin the development server is serving this window from, when there is one.
+///
+/// Read from the configuration this process was started with rather than assumed, because the
+/// port is not knowable when the binary is compiled: `pnpm desktop` picks the first free one, so
+/// a second project holding the usual port moves `FontNest` to another. Hard-coding it meant that
+/// on any other port the application refused its own web view, and every command behind this
+/// check, which is most of them, stopped working.
+///
+/// Release builds never consult it. The configuration still carries a development URL in a
+/// packaged application, and trusting a local server there would be a grant nobody asked for.
+pub(crate) fn development_origin_for<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<&tauri::Url> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    app.config().build.dev_url.as_ref()
 }
 
-pub(crate) fn is_trusted_app_origin(url: &tauri::Url) -> bool {
+/// True when an `Origin` header names the app's own web view. The internal preview
+/// protocol grants cross-origin read access to that origin and nothing else.
+pub(crate) fn is_trusted_origin_header(value: &str, development: Option<&tauri::Url>) -> bool {
+    tauri::Url::parse(value).is_ok_and(|url| is_trusted_app_origin(&url, development))
+}
+
+pub(crate) fn is_trusted_app_origin(url: &tauri::Url, development: Option<&tauri::Url>) -> bool {
     let scheme = url.scheme();
     let host = url.host_str().unwrap_or_default();
     if scheme == "tauri" && host == "localhost" {
@@ -806,7 +825,9 @@ pub(crate) fn is_trusted_app_origin(url: &tauri::Url) -> bool {
     if matches!(scheme, "http" | "https") && host == "tauri.localhost" {
         return true;
     }
-    cfg!(debug_assertions) && scheme == "http" && host == "localhost" && url.port() == Some(5173)
+    // Compared as origins, so scheme, host and port all have to agree: another server on another
+    // port of the same host is somebody else.
+    development.is_some_and(|development| development.origin() == url.origin())
 }
 
 fn validate_face_id(face_id: &str) -> Result<(), CommandError> {
@@ -922,22 +943,75 @@ mod tests {
         assert!(!update_version_matches("", "0.1.1"));
     }
 
+    fn url(value: &str) -> tauri::Url {
+        tauri::Url::parse(value).expect("a URL the test wrote")
+    }
+
     #[test]
     fn sensitive_font_commands_only_trust_the_app_origin() {
+        assert!(is_trusted_app_origin(&url("http://tauri.localhost/"), None));
+        assert!(!is_trusted_app_origin(
+            &url("https://fonts.google.com/"),
+            None
+        ));
+    }
+
+    // The development server does not always get the port it prefers: `pnpm desktop` moves to the
+    // next free one when something else is already there. Trusting a port chosen when the binary
+    // was compiled meant the application refused its own web view on any other one, and every
+    // command behind this check stopped working, which is most of them.
+    #[test]
+    fn the_development_origin_is_whichever_one_this_process_was_given() {
+        let development = url("http://localhost:5175/");
+
         assert!(is_trusted_app_origin(
-            &tauri::Url::parse("http://tauri.localhost/").expect("the production URL")
+            &url("http://localhost:5175/"),
+            Some(&development)
+        ));
+        assert!(
+            !is_trusted_app_origin(&url("http://localhost:5173/"), Some(&development)),
+            "another port on the same host is another server"
+        );
+        assert!(
+            !is_trusted_app_origin(&url("http://localhost:5175/"), None),
+            "a build with no development server trusts no local one"
+        );
+    }
+
+    #[test]
+    fn the_production_origin_is_trusted_whatever_the_development_one_is() {
+        let development = url("http://localhost:5175/");
+
+        assert!(is_trusted_app_origin(
+            &url("http://tauri.localhost/"),
+            Some(&development)
+        ));
+        assert!(is_trusted_app_origin(
+            &url("tauri://localhost/"),
+            Some(&development)
         ));
         assert!(!is_trusted_app_origin(
-            &tauri::Url::parse("https://fonts.google.com/").expect("the remote URL")
+            &url("https://fonts.google.com/"),
+            Some(&development)
         ));
     }
 
     #[test]
     fn preview_protocol_only_grants_cors_to_the_app_origin() {
-        assert!(is_trusted_origin_header("http://tauri.localhost"));
-        assert!(!is_trusted_origin_header("https://fonts.google.com"));
-        assert!(!is_trusted_origin_header("null"));
-        assert!(!is_trusted_origin_header("not a url"));
+        let development = url("http://localhost:5175/");
+
+        assert!(is_trusted_origin_header("http://tauri.localhost", None));
+        assert!(is_trusted_origin_header(
+            "http://localhost:5175",
+            Some(&development)
+        ));
+        assert!(!is_trusted_origin_header(
+            "http://localhost:5173",
+            Some(&development)
+        ));
+        assert!(!is_trusted_origin_header("https://fonts.google.com", None));
+        assert!(!is_trusted_origin_header("null", None));
+        assert!(!is_trusted_origin_header("not a url", None));
     }
 
     #[test]

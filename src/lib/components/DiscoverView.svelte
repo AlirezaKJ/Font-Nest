@@ -661,8 +661,12 @@
 			if (target.renderWeight !== weight) showWeightNotes();
 			touchPreview(family.id);
 			enforcePreviewCacheLimit();
-		} catch {
+		} catch (error) {
 			if (destroyed || previewWeights[family.id] !== weight) return;
+			// The row says "system fallback" and stays calm about it, which is right for the
+			// person reading it and useless for anyone trying to find out why. The reason goes to
+			// the console: a whole catalogue failing to preview has a cause worth seeing.
+			console.error(`FontNest could not preview ${family.family}.`, error);
 			previewStatuses[family.id] = 'error';
 		}
 	}
