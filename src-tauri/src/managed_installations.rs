@@ -10,7 +10,7 @@ use crate::font_identity::IdentityKey;
 pub const LEDGER_FILE_NAME: &str = "fontnest.sqlite3";
 
 /// Highest schema version this build understands. It must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// The journal state of an operation that may still be undone at the next launch.
 const OPERATION_OPEN: &str = "open";
@@ -98,6 +98,25 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE managed_operation_steps ADD COLUMN quarantine_path TEXT NOT NULL DEFAULT '';
 ",
+    "
+    CREATE TABLE quarantined_fonts (
+        id TEXT PRIMARY KEY NOT NULL,
+        provider TEXT NOT NULL,
+        family_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        family_name TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        source_hash TEXT NOT NULL,
+        installed_path TEXT NOT NULL,
+        registry_value_name TEXT NOT NULL,
+        quarantine_path TEXT NOT NULL,
+        license TEXT NOT NULL,
+        license_path TEXT NOT NULL,
+        removed_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX idx_quarantined_fonts_removed_at ON quarantined_fonts(removed_at);
+",
 ];
 
 /// Why the ledger could not be brought up to the schema this build expects.
@@ -131,6 +150,54 @@ pub struct ManagedInstallationRecord {
     /// The journal operation that placed this font, so a row can always be traced back to the
     /// run that produced it.
     pub operation_id: String,
+}
+
+/// Reads one installation row. Both queries select the same columns in the same order, and this
+/// is the one place that knows what that order means.
+fn read_installation(
+    row: &rusqlite::Row<'_>,
+) -> Result<ManagedInstallationRecord, rusqlite::Error> {
+    Ok(ManagedInstallationRecord {
+        id: row.get(0)?,
+        provider: row.get(1)?,
+        family_id: row.get(2)?,
+        artifact_id: row.get(3)?,
+        family_name: row.get(4)?,
+        display_name: row.get(5)?,
+        source_commit: row.get(6)?,
+        source_hash: row.get(7)?,
+        installed_path: row.get(8)?,
+        registry_value_name: row.get(9)?,
+        license: row.get(10)?,
+        license_path: row.get(11)?,
+        operation_id: row.get(12)?,
+    })
+}
+
+/// A font an uninstall took out of service and set aside.
+///
+/// A removal moves the file into quarantine rather than deleting it, which is only half a promise
+/// while nothing remembers what the file was. This is the other half: everything needed to put it
+/// back where it was, under the name it was registered as, without asking the file to explain
+/// itself. It is written in the same transaction that stops the ledger claiming the font, so the
+/// two facts can never disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuarantinedFont {
+    pub id: String,
+    pub provider: String,
+    pub family_id: String,
+    pub artifact_id: String,
+    pub family_name: String,
+    pub display_name: String,
+    pub source_hash: String,
+    /// Where it was installed, and where a restore puts it back.
+    pub installed_path: String,
+    pub registry_value_name: String,
+    pub quarantine_path: String,
+    pub license: String,
+    pub license_path: String,
+    /// Seconds since the Unix epoch.
+    pub removed_at: i64,
 }
 
 /// What an interrupted operation was in the middle of doing. Update and repair join these when
@@ -303,24 +370,94 @@ impl ManagedInstallationRepository {
              WHERE provider = ?1 AND family_id = ?2
              ORDER BY artifact_id",
         )?;
-        let rows = statement.query_map(params![provider, family_id], |row| {
-            Ok(ManagedInstallationRecord {
+        let rows = statement.query_map(params![provider, family_id], read_installation)?;
+        rows.collect()
+    }
+
+    /// Every font `FontNest` currently has installed, whatever put it there.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the ledger cannot be read.
+    pub fn all_installations(&self) -> Result<Vec<ManagedInstallationRecord>, rusqlite::Error> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT id, provider, family_id, artifact_id, family_name, display_name,
+                    source_commit, source_hash, installed_path, registry_value_name,
+                    license, license_path, operation_id
+             FROM managed_installations
+             ORDER BY family_name, display_name",
+        )?;
+        let rows = statement.query_map([], read_installation)?;
+        rows.collect()
+    }
+
+    /// Every font a removal set aside and has not yet been asked to put back.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the ledger cannot be read.
+    pub fn quarantined_fonts(&self) -> Result<Vec<QuarantinedFont>, rusqlite::Error> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT id, provider, family_id, artifact_id, family_name, display_name, source_hash,
+                    installed_path, registry_value_name, quarantine_path, license, license_path,
+                    removed_at
+             FROM quarantined_fonts
+             ORDER BY removed_at DESC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(QuarantinedFont {
                 id: row.get(0)?,
                 provider: row.get(1)?,
                 family_id: row.get(2)?,
                 artifact_id: row.get(3)?,
                 family_name: row.get(4)?,
                 display_name: row.get(5)?,
-                source_commit: row.get(6)?,
-                source_hash: row.get(7)?,
-                installed_path: row.get(8)?,
-                registry_value_name: row.get(9)?,
+                source_hash: row.get(6)?,
+                installed_path: row.get(7)?,
+                registry_value_name: row.get(8)?,
+                quarantine_path: row.get(9)?,
                 license: row.get(10)?,
                 license_path: row.get(11)?,
-                operation_id: row.get(12)?,
+                removed_at: row.get(12)?,
             })
         })?;
         rows.collect()
+    }
+
+    /// One quarantined font, by the installation identifier it had.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the ledger cannot be read.
+    pub fn quarantined_font(&self, id: &str) -> Result<Option<QuarantinedFont>, rusqlite::Error> {
+        Ok(self
+            .quarantined_fonts()?
+            .into_iter()
+            .find(|font| font.id == id))
+    }
+
+    /// Puts a quarantined font back into the ledger as an installation, in one transaction.
+    ///
+    /// The row moves rather than being copied: a font cannot be both set aside and installed, and
+    /// a restore that recorded one without clearing the other would offer it back forever.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the ledger cannot be written.
+    pub fn commit_restore(
+        &self,
+        record: &ManagedInstallationRecord,
+    ) -> Result<(), rusqlite::Error> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        insert_records(&transaction, std::slice::from_ref(record))?;
+        transaction.execute(
+            "DELETE FROM quarantined_fonts WHERE id = ?1",
+            params![record.id],
+        )?;
+        transaction.commit()
     }
 
     /// Forgets the installations an uninstall took back and closes its journal entry in the same
@@ -338,6 +475,7 @@ impl ManagedInstallationRepository {
         &self,
         id: &str,
         installation_ids: &[String],
+        quarantined: &[QuarantinedFont],
     ) -> Result<(), rusqlite::Error> {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
@@ -346,6 +484,34 @@ impl ManagedInstallationRepository {
                 transaction.prepare("DELETE FROM managed_installations WHERE id = ?1")?;
             for installation_id in installation_ids {
                 statement.execute(params![installation_id])?;
+            }
+        }
+        {
+            // The font stops being claimed and starts being recoverable at the same moment. A
+            // quarantined file nothing remembers is a file nobody can put back.
+            let mut statement = transaction.prepare(
+                "INSERT OR REPLACE INTO quarantined_fonts (
+                    id, provider, family_id, artifact_id, family_name, display_name, source_hash,
+                    installed_path, registry_value_name, quarantine_path, license, license_path,
+                    removed_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            )?;
+            for font in quarantined {
+                statement.execute(params![
+                    font.id,
+                    font.provider,
+                    font.family_id,
+                    font.artifact_id,
+                    font.family_name,
+                    font.display_name,
+                    font.source_hash,
+                    font.installed_path,
+                    font.registry_value_name,
+                    font.quarantine_path,
+                    font.license,
+                    font.license_path,
+                    font.removed_at,
+                ])?;
             }
         }
         transaction.execute("DELETE FROM managed_operations WHERE id = ?1", params![id])?;
@@ -714,8 +880,8 @@ fn schema_version(connection: &Connection) -> Result<i64, rusqlite::Error> {
 mod tests {
     use super::{
         InterruptedOperation, LedgerError, MIGRATIONS, ManagedInstallationRecord,
-        ManagedInstallationRepository, OperationKind, OperationStep, SCHEMA_VERSION,
-        schema_version,
+        ManagedInstallationRepository, OperationKind, OperationStep, QuarantinedFont,
+        SCHEMA_VERSION, schema_version,
     };
     use crate::font_identity::{FileIdentity, face_identity_key, family_identity_key};
     use rusqlite::Connection;
@@ -1153,5 +1319,144 @@ mod tests {
                 .expect("the quarantine count"),
             1
         );
+    }
+
+    fn sample_quarantined() -> QuarantinedFont {
+        let record = sample_record();
+        QuarantinedFont {
+            id: record.id,
+            provider: record.provider,
+            family_id: record.family_id,
+            artifact_id: record.artifact_id,
+            family_name: record.family_name,
+            display_name: record.display_name,
+            source_hash: record.source_hash,
+            installed_path: record.installed_path,
+            registry_value_name: record.registry_value_name,
+            quarantine_path:
+                r"C:\Users\Akari\AppData\Roaming\com.fontnest.desktop\quarantine\op\Inter.ttf"
+                    .to_owned(),
+            license: record.license,
+            license_path: record.license_path,
+            removed_at: 1_790_000_000,
+        }
+    }
+
+    // A removal sets the file aside rather than deleting it, which is only half a promise while
+    // nothing remembers what the file was. The ledger stops claiming the font and starts offering
+    // it back in the same transaction.
+    #[test]
+    fn a_removal_leaves_a_record_of_what_it_set_aside() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let repository = ready_repository(directory.path());
+        repository
+            .commit_operation(OPERATION, std::slice::from_ref(&sample_record()))
+            .expect("the installation");
+
+        repository
+            .commit_uninstall(
+                OPERATION,
+                &[sample_record().id],
+                std::slice::from_ref(&sample_quarantined()),
+            )
+            .expect("the removal");
+
+        assert!(
+            repository
+                .all_installations()
+                .expect("the ledger")
+                .is_empty(),
+            "the ledger stops claiming a font it took away"
+        );
+        assert_eq!(
+            repository.quarantined_fonts().expect("the quarantine"),
+            vec![sample_quarantined()],
+            "and remembers where it put it"
+        );
+    }
+
+    #[test]
+    fn a_font_put_back_stops_being_offered_back() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let repository = ready_repository(directory.path());
+        repository
+            .commit_operation(OPERATION, std::slice::from_ref(&sample_record()))
+            .expect("the installation");
+        repository
+            .commit_uninstall(
+                OPERATION,
+                &[sample_record().id],
+                std::slice::from_ref(&sample_quarantined()),
+            )
+            .expect("the removal");
+
+        repository
+            .commit_restore(&sample_record())
+            .expect("the restore");
+
+        assert_eq!(
+            repository.all_installations().expect("the ledger").len(),
+            1,
+            "the font is claimed again"
+        );
+        assert!(
+            repository
+                .quarantined_fonts()
+                .expect("the quarantine")
+                .is_empty(),
+            "and is not still waiting to be put back"
+        );
+    }
+
+    #[test]
+    fn one_quarantined_font_can_be_found_by_the_identifier_it_had() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let repository = ready_repository(directory.path());
+        repository
+            .commit_uninstall(OPERATION, &[], std::slice::from_ref(&sample_quarantined()))
+            .expect("the removal");
+
+        assert_eq!(
+            repository
+                .quarantined_font(&sample_record().id)
+                .expect("the lookup"),
+            Some(sample_quarantined())
+        );
+        assert_eq!(
+            repository
+                .quarantined_font("nothing:like:this")
+                .expect("the lookup"),
+            None
+        );
+    }
+
+    // The inventory is everything FontNest put here, not one provider's share of it.
+    #[test]
+    fn the_inventory_lists_every_source() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let repository = ready_repository(directory.path());
+        let imported = ManagedInstallationRecord {
+            id: "local:abc".to_owned(),
+            provider: "local".to_owned(),
+            family_id: "Cardo".to_owned(),
+            artifact_id: "abc".to_owned(),
+            family_name: "Cardo".to_owned(),
+            display_name: "Cardo Regular".to_owned(),
+            ..sample_record()
+        };
+        repository
+            .commit_operation(OPERATION, &[sample_record(), imported])
+            .expect("both installations");
+
+        let providers = repository
+            .all_installations()
+            .expect("the ledger")
+            .into_iter()
+            .map(|record| record.provider)
+            .collect::<Vec<_>>();
+
+        assert_eq!(providers.len(), 2);
+        assert!(providers.contains(&"google-fonts".to_owned()));
+        assert!(providers.contains(&"local".to_owned()));
     }
 }

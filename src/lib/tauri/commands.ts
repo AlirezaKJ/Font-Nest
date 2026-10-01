@@ -16,6 +16,8 @@ import type { GoogleFontPreview } from '$lib/bindings/GoogleFontPreview';
 import type { GoogleFontUninstallResult } from '$lib/bindings/GoogleFontUninstallResult';
 import type { ImportOutcome } from '$lib/bindings/ImportOutcome';
 import type { ImportPlan } from '$lib/bindings/ImportPlan';
+import type { FontRemovalReport } from '$lib/bindings/FontRemovalReport';
+import type { ManagedFontInventory } from '$lib/bindings/ManagedFontInventory';
 import type { LoadedPreferences } from '$lib/bindings/LoadedPreferences';
 import type { ManagedStorageStatus } from '$lib/bindings/ManagedStorageStatus';
 import type { Preferences } from '$lib/bindings/Preferences';
@@ -159,4 +161,21 @@ export function preflightFontImport(paths: string[]): Promise<ImportPlan> {
  */
 export function importFontFiles(paths: string[]): Promise<ImportOutcome[]> {
 	return invoke<ImportOutcome[]>('import_font_files', { paths });
+}
+
+/**
+ * Everything FontNest is looking after: what it has installed, and what a removal set aside. A
+ * row here is a claim the ledger makes, not a proof; removing one still proves ownership from the
+ * file itself first.
+ */
+export function managedFontInventory(): Promise<ManagedFontInventory> {
+	return invoke<ManagedFontInventory>('managed_font_inventory');
+}
+
+export function removeManagedFont(id: string): Promise<FontRemovalReport> {
+	return invoke<FontRemovalReport>('remove_managed_font', { id });
+}
+
+export function restoreManagedFont(id: string): Promise<void> {
+	return invoke<void>('restore_managed_font', { id });
 }

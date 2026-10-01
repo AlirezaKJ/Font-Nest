@@ -10,9 +10,10 @@ use crate::catalogue::{self, CatalogueInspectionError, FontCatalogueStore};
 use crate::dto::{
     AppUpdateEvent, AppUpdateInfo, CommandError, FontCatalogue, FontFaceInspection,
     FontGlyphOutline, FontGlyphOutlineRequest, FontParserJsonEvent, FontParserJsonRequest,
-    GoogleFontFamilyDetails, GoogleFontInstallResult, GoogleFontPage, GoogleFontPageRequest,
-    GoogleFontPreview, GoogleFontUninstallResult, InstallGoogleFontRequest, ManagedStorageStatus,
-    UninstallGoogleFontRequest, ValidatedLocalFont,
+    FontRemovalReport, GoogleFontFamilyDetails, GoogleFontInstallResult, GoogleFontPage,
+    GoogleFontPageRequest, GoogleFontPreview, GoogleFontUninstallResult, InstallGoogleFontRequest,
+    ManagedFontInventory, ManagedFontSummary, ManagedStorageStatus, QuarantinedFontSummary,
+    RefusedFontRemoval, UninstallGoogleFontRequest, ValidatedLocalFont,
 };
 use crate::font_identity::{IdentityKind, is_well_formed};
 use crate::font_inspection::{self, CancelToken, FontInspectionError, ParserJsonSnapshot};
@@ -21,7 +22,9 @@ use crate::google_fonts::{self, GoogleFontsError};
 use crate::local_fonts::{self, LocalFontError};
 use crate::local_import::{self, ImportOutcome, ImportPlan};
 use crate::managed_installations::ManagedInstallationRepository;
+use crate::managed_ownership;
 use crate::managed_storage::ManagedStorage;
+use crate::managed_uninstall;
 use crate::preferences::{self, LoadedPreferences, Preferences};
 use crate::release_notes::{self, ReleaseNotesError};
 
@@ -556,6 +559,157 @@ pub fn save_preferences(
         log::warn!("FontNest could not write its settings: {error}");
         CommandError::preferences_unavailable()
     })
+}
+
+/// Everything `FontNest` is looking after: the fonts it has installed, and the ones it has set
+/// aside after a removal.
+///
+/// Reading the ledger only. A font listed here is a claim the ledger makes, not a proof: removing
+/// one still has to prove ownership from the file itself first.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn managed_font_inventory(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<ManagedFontInventory, CommandError> {
+    ensure_trusted_window(&window)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| CommandError::managed_storage_unavailable())?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = ManagedInstallationRepository::in_app_data_dir(&app_data_dir);
+        let installed = repository
+            .all_installations()
+            .map_err(|_| CommandError::managed_inventory_unavailable())?
+            .into_iter()
+            .map(|record| ManagedFontSummary {
+                id: record.id,
+                imported: record.provider == local_import::LOCAL_PROVIDER,
+                provider: record.provider,
+                family_name: record.family_name,
+                display_name: record.display_name,
+            })
+            .collect();
+        let quarantined = repository
+            .quarantined_fonts()
+            .map_err(|_| CommandError::managed_inventory_unavailable())?
+            .into_iter()
+            .map(|font| QuarantinedFontSummary {
+                id: font.id,
+                imported: font.provider == local_import::LOCAL_PROVIDER,
+                provider: font.provider,
+                family_name: font.family_name,
+                display_name: font.display_name,
+                removed_at: font.removed_at,
+            })
+            .collect();
+        Ok(ManagedFontInventory {
+            installed,
+            quarantined,
+        })
+    })
+    .await
+    .map_err(|_| CommandError::managed_inventory_unavailable())?
+}
+
+/// Takes one font back off this computer, whatever source put it there.
+///
+/// The identifier names a ledger row, and the ledger is a claim rather than a proof: the removal
+/// still derives everything from the file itself before it touches anything.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn remove_managed_font(
+    id: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<FontRemovalReport, CommandError> {
+    ensure_trusted_window(&window)?;
+    // Fail closed: a ledger FontNest cannot read or trust cannot prove what it owns, so it must
+    // not take anything off this computer.
+    app.state::<ManagedStorage>()
+        .ensure_writable()
+        .map_err(CommandError::managed_storage_recovery)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| CommandError::managed_storage_unavailable())?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = ManagedInstallationRepository::in_app_data_dir(&app_data_dir);
+        let record = repository
+            .all_installations()
+            .map_err(|_| CommandError::managed_inventory_unavailable())?
+            .into_iter()
+            .find(|record| record.id == id)
+            .ok_or_else(CommandError::managed_inventory_unavailable)?;
+
+        managed_uninstall::uninstall_family(
+            &repository,
+            &app_data_dir,
+            &record.provider,
+            &record.family_id,
+            std::slice::from_ref(&record.artifact_id),
+            &managed_ownership::SystemEnvironment,
+        )
+        .map(|outcome| FontRemovalReport {
+            removed: !outcome.removed.is_empty(),
+            refused: outcome
+                .refused
+                .into_iter()
+                .next()
+                .map(|refused| RefusedFontRemoval {
+                    artifact_id: refused.artifact_id,
+                    display_name: refused.display_name,
+                    reason: google_fonts::refusal_summary(refused.reason),
+                }),
+        })
+        .map_err(|_| CommandError::font_uninstall_failed())
+    })
+    .await
+    .map_err(|_| CommandError::font_uninstall_failed())?
+}
+
+/// Puts a font a removal set aside back into service.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn restore_managed_font(
+    id: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), CommandError> {
+    ensure_trusted_window(&window)?;
+    app.state::<ManagedStorage>()
+        .ensure_writable()
+        .map_err(CommandError::managed_storage_recovery)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| CommandError::managed_storage_unavailable())?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = ManagedInstallationRepository::in_app_data_dir(&app_data_dir);
+        let font = repository
+            .quarantined_font(&id)
+            .map_err(|_| CommandError::managed_inventory_unavailable())?
+            .ok_or_else(CommandError::font_restore_failed)?;
+
+        managed_uninstall::restore_quarantined_font(
+            &repository,
+            &font,
+            &managed_ownership::SystemEnvironment,
+        )
+        .map_err(|refusal| {
+            log::warn!(
+                "FontNest will not put {name} back: {refusal}",
+                name = font.display_name
+            );
+            CommandError::font_restore_failed()
+        })
+    })
+    .await
+    .map_err(|_| CommandError::font_restore_failed())?
 }
 
 /// Reviews font files the person chose, without changing anything.

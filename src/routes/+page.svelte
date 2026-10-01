@@ -42,6 +42,7 @@
 		isSystemOnly
 	} from '$lib/fonts/font-origin';
 	import { importReviewed, reviewChosenFonts } from '$lib/fonts/import';
+	import { EMPTY_INVENTORY, refusalDetail } from '$lib/fonts/managed';
 	import { importLocalFontPreview, releaseLocalFontPreview } from '$lib/fonts/local-fonts';
 	import { hasUnseenRelease } from '$lib/release-notes/loader';
 	import { reorderIds, type ReorderPosition } from '$lib/reorder';
@@ -54,6 +55,11 @@
 	} from '$lib/session';
 	import * as preferencesStore from '$lib/preferences/store';
 	import { isStickySurfaceElevated } from '$lib/sticky-surface';
+	import {
+		managedFontInventory,
+		removeManagedFont,
+		restoreManagedFont
+	} from '$lib/tauri/commands';
 	import { fontFaceFilePath, revealFontFaceFile, scanInstalledFonts } from '$lib/tauri/commands';
 
 	const PAGE_SIZE = 120;
@@ -123,6 +129,12 @@
 
 	$effect(() => {
 		if (view !== 'library') libraryControlsElevated = false;
+	});
+
+	// Settings is the only place that shows the inventory, so it is read when Settings opens
+	// rather than kept up to date in the background.
+	$effect(() => {
+		if (view === 'settings') void refreshManagedInventory();
 	});
 
 	// Everything the session holds, written back through the same debounced path the specimen
@@ -228,6 +240,9 @@
 	let importPlan = $state<ImportPlan | null>(null);
 	let importOutcomes = $state<ImportOutcome[] | null>(null);
 	let importRunning = $state(false);
+	// What FontNest is looking after, and which row is mid-operation so only its own button says so.
+	let managedInventory = $state(EMPTY_INVENTORY);
+	let managedBusyId = $state<string | null>(null);
 	let prefersReducedMotion = $state(false);
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
 	let updateCheckTimer: ReturnType<typeof setTimeout> | undefined;
@@ -910,6 +925,54 @@
 		}
 	}
 
+	/**
+	 * Reads what FontNest has installed and set aside. Read-only and cheap, so it runs whenever
+	 * Settings opens rather than being cached into staleness.
+	 */
+	async function refreshManagedInventory() {
+		if (catalogueMode !== 'native') return;
+		try {
+			managedInventory = await managedFontInventory();
+		} catch (error) {
+			showToast(commandErrorMessage(error), 'error');
+		}
+	}
+
+	async function removeManagedFontById(id: string) {
+		if (managedBusyId) return;
+		managedBusyId = id;
+		try {
+			const report = await removeManagedFont(id);
+			if (report.refused) {
+				showToast(refusalDetail(report.refused.reason), 'error');
+			} else if (report.removed) {
+				showToast('Font removed and set aside.', 'success');
+			}
+			await refreshManagedInventory();
+			// The font is out of service, so the catalogue should stop listing it.
+			if (report.removed) await refreshCatalogue();
+		} catch (error) {
+			showToast(commandErrorMessage(error), 'error');
+		} finally {
+			managedBusyId = null;
+		}
+	}
+
+	async function restoreManagedFontById(id: string) {
+		if (managedBusyId) return;
+		managedBusyId = id;
+		try {
+			await restoreManagedFont(id);
+			showToast('Font put back.', 'success');
+			await refreshManagedInventory();
+			await refreshCatalogue();
+		} catch (error) {
+			showToast(commandErrorMessage(error), 'error');
+		} finally {
+			managedBusyId = null;
+		}
+	}
+
 	function closeImport() {
 		if (importRunning) return;
 		importPlan = null;
@@ -1499,6 +1562,10 @@
 				onFocusOutlines={setFocusOutlines}
 				onPreviewText={setPreviewText}
 				onViewReleaseNotes={() => navigate('whatsNew')}
+				inventory={managedInventory}
+				busyId={managedBusyId}
+				onRemove={removeManagedFontById}
+				onRestore={restoreManagedFontById}
 			/>
 		{/if}
 	</main>

@@ -502,7 +502,9 @@ pub fn uninstall_fonts(
 
 /// Says why a font was left alone in the interface's own terms, without leaking the paths and
 /// registry names the checks were made against.
-const fn refusal_summary(refusal: OwnershipRefusal) -> FontRemovalRefusal {
+/// Turns a refusal into the summary the interface shows. Shared, so every surface that can refuse
+/// a removal explains it in the same words.
+pub(crate) const fn refusal_summary(refusal: OwnershipRefusal) -> FontRemovalRefusal {
     match refusal {
         OwnershipRefusal::UnknownProvider => FontRemovalRefusal::UnknownSource,
         OwnershipRefusal::FontDirectoryUnavailable => FontRemovalRefusal::LocationUnavailable,

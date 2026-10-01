@@ -24,10 +24,11 @@ use std::path::{Path, PathBuf};
 use crate::font_platform::{FontPlatformError, is_managed_file_name};
 use crate::managed_installations::{
     ManagedInstallationRecord, ManagedInstallationRepository, OperationKind, OperationStep,
+    QuarantinedFont,
 };
 use crate::managed_ownership::{
     ManagedEnvironment, OwnershipRefusal, ProvenOwnership, UninstallClaim, authorize_uninstall,
-    still_the_proven_file,
+    content_hash, still_the_proven_file,
 };
 
 /// Where uninstalled fonts are kept, inside the application data directory.
@@ -151,7 +152,9 @@ pub fn uninstall_family(
         .begin_operation(&operation_id, OperationKind::Uninstall, provider, &steps)
         .map_err(|_| UninstallError::Ledger)?;
 
+    let removed_at = seconds_since_epoch();
     let mut installation_ids = Vec::with_capacity(proven.len());
+    let mut quarantined = Vec::with_capacity(proven.len());
     for ((record, proof), step) in proven.iter().zip(&steps) {
         if let Err(error) =
             take_out_of_service(environment, proof, Path::new(&step.quarantine_path))
@@ -163,19 +166,120 @@ pub fn uninstall_family(
             return Err(error);
         }
         installation_ids.push(record.id.clone());
+        // Where the file went, and everything needed to put it back. A quarantined file nothing
+        // remembers is one nobody can offer back, which would make setting it aside a kindness
+        // only in principle.
+        quarantined.push(QuarantinedFont {
+            id: record.id.clone(),
+            provider: record.provider.clone(),
+            family_id: record.family_id.clone(),
+            artifact_id: record.artifact_id.clone(),
+            family_name: record.family_name.clone(),
+            display_name: proof.display_name.clone(),
+            source_hash: record.source_hash.clone(),
+            installed_path: proof.path.to_string_lossy().into_owned(),
+            registry_value_name: proof.registry_value_name.clone(),
+            quarantine_path: step.quarantine_path.clone(),
+            license: record.license.clone(),
+            license_path: record.license_path.clone(),
+            removed_at,
+        });
         outcome.removed.push(RemovedFont {
             artifact_id: record.artifact_id.clone(),
             display_name: proof.display_name.clone(),
         });
     }
 
-    // The ledger stops claiming these fonts and the journal entry closes together. Until this
-    // commits, the fonts are still recorded as installed and the next launch restores them.
+    // The ledger stops claiming these fonts, starts offering them back, and the journal entry
+    // closes, all together. Until this commits, the fonts are still recorded as installed and the
+    // next launch restores them.
     repository
-        .commit_uninstall(&operation_id, &installation_ids)
+        .commit_uninstall(&operation_id, &installation_ids, &quarantined)
         .map_err(|_| UninstallError::Ledger)?;
 
     Ok(outcome)
+}
+
+/// Why a font a removal set aside could not be put back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum RestoreRefusal {
+    #[error("the quarantined file is no longer there")]
+    Missing,
+    #[error("the quarantined file no longer holds the bytes FontNest set aside")]
+    ContentMismatch,
+    #[error("the font is installed again, so there is nothing to put back")]
+    AlreadyInstalled,
+    #[error("the font could not be put back where it was")]
+    Platform,
+    #[error("the managed installation ledger is unavailable")]
+    Ledger,
+}
+
+/// Puts a font a removal set aside back into service.
+///
+/// A quarantined file lives in the application's own data directory, which is a place the person
+/// can edit, so the bytes are checked before any of this: they have to be the bytes that were set
+/// aside. Otherwise a restore would register whatever happens to be sitting at that path under a
+/// name `FontNest` chose, which is exactly the thing the uninstall proof exists to prevent in the
+/// other direction. Where the file goes is checked too, by the same containment rule a recovery
+/// uses: a managed name, directly inside the per-user font directory.
+///
+/// # Errors
+///
+/// Returns the [`RestoreRefusal`] naming the check that stopped. A refusal leaves the quarantined
+/// file exactly where it is.
+pub fn restore_quarantined_font(
+    repository: &ManagedInstallationRepository,
+    font: &QuarantinedFont,
+    environment: &impl ManagedEnvironment,
+) -> Result<(), RestoreRefusal> {
+    let quarantined = Path::new(&font.quarantine_path);
+    let bytes = std::fs::read(quarantined).map_err(|_| RestoreRefusal::Missing)?;
+    if !content_hash(&bytes).eq_ignore_ascii_case(&font.source_hash) {
+        return Err(RestoreRefusal::ContentMismatch);
+    }
+    if Path::new(&font.installed_path).exists() {
+        return Err(RestoreRefusal::AlreadyInstalled);
+    }
+
+    let installed_path =
+        return_quarantined_file(environment, &font.installed_path, &font.quarantine_path)
+            .map_err(|_| RestoreRefusal::Platform)?;
+    if !installed_path.is_file() {
+        return Err(RestoreRefusal::Missing);
+    }
+    environment
+        .register_font(&font.registry_value_name, &installed_path)
+        .map_err(|_| RestoreRefusal::Platform)?;
+
+    repository
+        .commit_restore(&ManagedInstallationRecord {
+            id: font.id.clone(),
+            provider: font.provider.clone(),
+            family_id: font.family_id.clone(),
+            artifact_id: font.artifact_id.clone(),
+            family_name: font.family_name.clone(),
+            display_name: font.display_name.clone(),
+            // A restored font was not placed by a provider run, and saying otherwise would invent
+            // provenance it does not have.
+            source_commit: String::new(),
+            source_hash: font.source_hash.clone(),
+            installed_path: installed_path.to_string_lossy().into_owned(),
+            registry_value_name: font.registry_value_name.clone(),
+            license: font.license.clone(),
+            license_path: font.license_path.clone(),
+            operation_id: String::new(),
+        })
+        .map_err(|_| RestoreRefusal::Ledger)
+}
+
+/// When a removal happened, for an interface that lists what can still be put back.
+fn seconds_since_epoch() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok())
+        .unwrap_or_default()
 }
 
 /// Puts back a font an interrupted uninstall had already taken.
@@ -193,7 +297,8 @@ pub fn restore_uninstalled_font(
     environment: &impl ManagedEnvironment,
     step: &OperationStep,
 ) -> Result<(), FontPlatformError> {
-    let installed_path = return_quarantined_file(environment, step)?;
+    let installed_path =
+        return_quarantined_file(environment, &step.installed_path, &step.quarantine_path)?;
     if !installed_path.is_file() {
         // Nothing to put back and nothing to register: the run never got as far as moving the
         // file, or something else has removed it since.
@@ -212,15 +317,16 @@ pub fn restore_uninstalled_font(
 /// putting it back.
 fn return_quarantined_file(
     environment: &impl ManagedEnvironment,
-    step: &OperationStep,
+    installed_path: &str,
+    quarantine_path: &str,
 ) -> Result<PathBuf, FontPlatformError> {
-    let installed_path = PathBuf::from(&step.installed_path);
+    let installed_path = PathBuf::from(installed_path);
     if !is_managed_destination(environment, &installed_path) {
         return Err(FontPlatformError::TargetConflict);
     }
 
-    let quarantined = Path::new(&step.quarantine_path);
-    if !step.quarantine_path.is_empty() && quarantined.is_file() && !installed_path.exists() {
+    let quarantined = Path::new(quarantine_path);
+    if !quarantine_path.is_empty() && quarantined.is_file() && !installed_path.exists() {
         std::fs::rename(quarantined, &installed_path).or_else(|_| {
             std::fs::copy(quarantined, &installed_path)
                 .and_then(|_| std::fs::remove_file(quarantined))
@@ -343,7 +449,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        QUARANTINE_DIRECTORY, UninstallOutcome, restore_uninstalled_font, uninstall_family,
+        QUARANTINE_DIRECTORY, RestoreRefusal, UninstallOutcome, restore_quarantined_font,
+        restore_uninstalled_font, uninstall_family,
     };
     use crate::font_platform::{FontPlatformError, managed_file_name, validate_font};
     use crate::managed_installations::{
@@ -787,5 +894,138 @@ mod tests {
             open[0].steps[0].quarantine_path,
             r"C:\Quarantine\FontNest-abc-Test.ttf"
         );
+    }
+
+    // Removal sets a font aside rather than deleting it, which is only a kindness if it can
+    // actually be undone. This is the whole round trip: out of service, then back into it.
+    #[test]
+    fn a_font_set_aside_can_be_put_back() {
+        let (_temp, installed) = installed!(temp);
+        uninstall_family(
+            &installed.repository,
+            &installed.app_data_dir,
+            PROVIDER,
+            FAMILY,
+            &[],
+            &installed.environment,
+        )
+        .expect("a proven font is FontNest's to remove");
+        assert!(!installed.path.exists(), "the font left the font folder");
+
+        let set_aside = installed
+            .repository
+            .quarantined_fonts()
+            .expect("the quarantine")
+            .into_iter()
+            .next()
+            .expect("the removal recorded what it set aside");
+
+        restore_quarantined_font(&installed.repository, &set_aside, &installed.environment)
+            .expect("a font FontNest set aside is one it can put back");
+
+        assert!(installed.path.exists(), "the file is back where it was");
+        assert_eq!(
+            std::fs::read(&installed.path).expect("the restored bytes"),
+            installed.bytes,
+            "and holds what it held before"
+        );
+        assert_eq!(
+            installed.environment.registered.borrow().as_slice(),
+            std::slice::from_ref(&installed.registry_value_name),
+            "and is registered again under the same name"
+        );
+        assert_eq!(
+            installed
+                .repository
+                .all_installations()
+                .expect("the ledger")
+                .len(),
+            1,
+            "the ledger claims it again"
+        );
+        assert!(
+            installed
+                .repository
+                .quarantined_fonts()
+                .expect("the quarantine")
+                .is_empty(),
+            "and stops offering it back"
+        );
+    }
+
+    // The quarantine lives in the application's own data directory, which the person can edit. A
+    // restore that did not check would register whatever happens to be sitting there.
+    #[test]
+    fn a_quarantined_file_somebody_swapped_is_not_put_back() {
+        let (_temp, installed) = installed!(temp);
+        uninstall_family(
+            &installed.repository,
+            &installed.app_data_dir,
+            PROVIDER,
+            FAMILY,
+            &[],
+            &installed.environment,
+        )
+        .expect("the removal");
+
+        let set_aside = installed
+            .repository
+            .quarantined_fonts()
+            .expect("the quarantine")
+            .into_iter()
+            .next()
+            .expect("one set aside");
+        std::fs::write(
+            &set_aside.quarantine_path,
+            b"not the font that was taken away",
+        )
+        .expect("the swap");
+
+        let refusal =
+            restore_quarantined_font(&installed.repository, &set_aside, &installed.environment)
+                .expect_err("bytes that are not the ones set aside are not put back");
+
+        assert_eq!(refusal, RestoreRefusal::ContentMismatch);
+        assert!(
+            !installed.path.exists(),
+            "and nothing reaches the font folder"
+        );
+        assert_eq!(
+            installed
+                .repository
+                .quarantined_fonts()
+                .expect("the quarantine")
+                .len(),
+            1,
+            "the record stays, so the mistake can still be looked at"
+        );
+    }
+
+    #[test]
+    fn a_font_already_installed_again_is_not_put_back_over_itself() {
+        let (_temp, installed) = installed!(temp);
+        uninstall_family(
+            &installed.repository,
+            &installed.app_data_dir,
+            PROVIDER,
+            FAMILY,
+            &[],
+            &installed.environment,
+        )
+        .expect("the removal");
+        let set_aside = installed
+            .repository
+            .quarantined_fonts()
+            .expect("the quarantine")
+            .into_iter()
+            .next()
+            .expect("one set aside");
+        std::fs::write(&installed.path, &installed.bytes).expect("the font is back by other means");
+
+        let refusal =
+            restore_quarantined_font(&installed.repository, &set_aside, &installed.environment)
+                .expect_err("there is nothing to put back");
+
+        assert_eq!(refusal, RestoreRefusal::AlreadyInstalled);
     }
 }

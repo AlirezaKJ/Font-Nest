@@ -11,6 +11,9 @@
 		progressPercent
 	} from '$lib/app-updater';
 
+	import type { ManagedFontInventory } from '$lib/bindings/ManagedFontInventory';
+	import { byFamily, inventorySummary, removedAgo, sourceLabel } from '$lib/fonts/managed';
+
 	import Icon from './Icon.svelte';
 
 	let {
@@ -22,7 +25,11 @@
 		onDensity,
 		onFocusOutlines,
 		onPreviewText,
-		onViewReleaseNotes
+		onViewReleaseNotes,
+		inventory,
+		busyId,
+		onRemove,
+		onRestore
 	}: {
 		theme: ThemePreference;
 		density: DensityPreference;
@@ -33,6 +40,11 @@
 		onFocusOutlines: (value: boolean) => void;
 		onPreviewText: (value: string) => void;
 		onViewReleaseNotes: () => void;
+		inventory: ManagedFontInventory;
+		/** The font a removal or a restore is working on, so only its own button says so. */
+		busyId: string | null;
+		onRemove: (id: string) => void;
+		onRestore: (id: string) => void;
 	} = $props();
 
 	let updatePercent = $derived(progressPercent($appUpdater.downloaded, $appUpdater.total));
@@ -187,6 +199,69 @@
 				<span
 					>Installs are per-user and recorded by FontNest. System fonts remain protected.</span
 				>
+			</div>
+		</section>
+
+		<section class="setting-row managed-row" aria-labelledby="managed-title">
+			<div>
+				<h2 id="managed-title">Fonts FontNest installed</h2>
+				<p>{inventorySummary(inventory)}</p>
+				<p class="managed-note">
+					Removing a font takes it out of service and sets the file aside inside
+					FontNest’s own data. Nothing is deleted, so a removal can be undone.
+				</p>
+			</div>
+
+			<div class="managed-lists">
+				{#if inventory.installed.length}
+					<ul class="managed-list">
+						{#each byFamily(inventory.installed) as [family, fonts] (family)}
+							<li class="family">
+								<p class="family-name">{family}</p>
+								<ul>
+									{#each fonts as font (font.id)}
+										<li class="managed-font">
+											<span class="font-name">{font.displayName}</span>
+											<span class="font-source">{sourceLabel(font)}</span>
+											<button
+												type="button"
+												disabled={busyId === font.id}
+												onclick={() => onRemove(font.id)}
+											>
+												{busyId === font.id ? 'Removing…' : 'Remove'}
+											</button>
+										</li>
+									{/each}
+								</ul>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+
+				{#if inventory.quarantined.length}
+					<div class="set-aside">
+						<p class="set-aside-title">Set aside</p>
+						<ul class="managed-list">
+							{#each inventory.quarantined as font (font.id)}
+								<li class="managed-font">
+									<span class="font-name">{font.displayName}</span>
+									<span class="font-source"
+										>{sourceLabel(font)} · removed {removedAgo(
+											font.removedAt
+										)}</span
+									>
+									<button
+										type="button"
+										disabled={busyId === font.id}
+										onclick={() => onRestore(font.id)}
+									>
+										{busyId === font.id ? 'Putting back…' : 'Put back'}
+									</button>
+								</li>
+							{/each}
+						</ul>
+					</div>
+				{/if}
 			</div>
 		</section>
 
@@ -394,6 +469,95 @@
 		font-size: var(--text-body-sm);
 		line-height: 1.5;
 		resize: vertical;
+	}
+
+	.managed-row {
+		align-items: start;
+	}
+
+	.managed-note {
+		margin-top: var(--space-sm);
+		max-width: 56ch;
+	}
+
+	.managed-lists {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: var(--space-lg);
+	}
+
+	.managed-list,
+	.managed-list ul {
+		display: flex;
+		flex-direction: column;
+		margin: 0;
+		padding: 0;
+		gap: var(--space-xs);
+		list-style: none;
+	}
+
+	.family + .family {
+		margin-top: var(--space-md);
+	}
+
+	.family-name {
+		margin: 0 0 var(--space-xs);
+		color: var(--color-muted);
+		font-size: var(--text-micro);
+		font-weight: 650;
+	}
+
+	.managed-font {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--space-md);
+		padding: var(--space-xs) var(--space-sm);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		background: var(--color-control);
+	}
+
+	.font-name {
+		min-width: 0;
+		flex: 1;
+		font-size: var(--text-body-sm);
+		overflow-wrap: anywhere;
+	}
+
+	.font-source {
+		flex: none;
+		color: var(--color-subtle);
+		font-size: var(--text-micro);
+	}
+
+	.managed-font button {
+		flex: none;
+		padding: 3px 10px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-xs);
+		color: var(--color-text);
+		background: var(--color-raised);
+		font-size: var(--text-micro);
+		font-weight: 650;
+		cursor: pointer;
+	}
+
+	.managed-font button:hover:not(:disabled) {
+		background: var(--color-hover);
+	}
+
+	.managed-font button:disabled {
+		cursor: progress;
+		opacity: 0.6;
+	}
+
+	.set-aside-title {
+		margin: 0 0 var(--space-xs);
+		color: var(--color-muted);
+		font-size: var(--text-micro);
+		font-weight: 650;
 	}
 
 	.safety-note {

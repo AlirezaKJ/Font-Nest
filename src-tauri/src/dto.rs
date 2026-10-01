@@ -426,6 +426,18 @@ pub struct RefusedFontRemoval {
     pub reason: FontRemovalRefusal,
 }
 
+/// What removing one managed font did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct FontRemovalReport {
+    /// True when the font was taken out of service and set aside.
+    pub removed: bool,
+    /// Set when `FontNest` would not remove it, with the check that stopped. The font is still
+    /// installed and still registered.
+    pub refused: Option<RefusedFontRemoval>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/bindings/")]
@@ -496,6 +508,48 @@ pub struct ManagedStorageStatus {
     pub quarantined_operations: u32,
 }
 
+/// One font `FontNest` has installed on this computer, whatever put it there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct ManagedFontSummary {
+    /// The identifier a removal names it by.
+    pub id: String,
+    /// Which source put it here: a provider, or this computer.
+    pub provider: String,
+    pub family_name: String,
+    pub display_name: String,
+    /// True when the font came from a file somebody imported rather than from a provider.
+    pub imported: bool,
+}
+
+/// One font a removal set aside, and has not been asked to put back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct QuarantinedFontSummary {
+    pub id: String,
+    pub provider: String,
+    pub family_name: String,
+    pub display_name: String,
+    pub imported: bool,
+    /// Seconds since the Unix epoch, so the interface can say how long ago.
+    ///
+    /// Typed as a number rather than left to the default: this crosses as JSON, where it is a
+    /// number, and a binding that said `bigint` would describe something that never arrives.
+    #[ts(type = "number")]
+    pub removed_at: i64,
+}
+
+/// Everything `FontNest` is looking after: what is installed, and what it has set aside.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/")]
+pub struct ManagedFontInventory {
+    pub installed: Vec<ManagedFontSummary>,
+    pub quarantined: Vec<QuarantinedFontSummary>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CommandError {
     pub code: &'static str,
@@ -507,6 +561,20 @@ impl CommandError {
         Self {
             code: "catalogue_unavailable",
             message: "FontNest could not read the installed font catalogue. Try scanning again.",
+        }
+    }
+
+    pub const fn managed_inventory_unavailable() -> Self {
+        Self {
+            code: "managed_inventory_unavailable",
+            message: "FontNest could not read what it has installed.",
+        }
+    }
+
+    pub const fn font_restore_failed() -> Self {
+        Self {
+            code: "font_restore_failed",
+            message: "FontNest could not put that font back. It is still set aside.",
         }
     }
 

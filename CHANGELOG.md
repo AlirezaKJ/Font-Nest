@@ -12,6 +12,13 @@ a bundled copy when you are offline.
 
 ### Added
 
+- Settings now lists every font FontNest has installed on this computer, from Discover or from a
+  file you imported, and each one can be removed on its own rather than a whole family at a time.
+  Removing has never deleted anything: the file is moved into FontNest's own data and taken out of
+  service. What is new is that the app remembers it, so a font you removed is listed as set aside
+  with when it went, and Put back returns it. A font whose set-aside copy has been changed since is
+  refused rather than put back, and one you have installed again by other means is left alone.
+
 - You can install font files you already have. Import fonts in the library takes single files or a
   whole folder, and before anything is written it shows you what it found: the family and style
   inside each file, its version, what the font itself says about its licence and embedding, how
