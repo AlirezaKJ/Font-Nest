@@ -8,6 +8,7 @@ mod font_platform;
 mod font_variations;
 mod google_fonts;
 mod local_fonts;
+mod local_import;
 mod managed_installations;
 mod managed_ownership;
 mod managed_recovery;
@@ -137,6 +138,8 @@ pub fn run() {
             commands::install_google_font,
             commands::uninstall_google_font,
             commands::managed_storage_status,
+            commands::preflight_font_import,
+            commands::import_font_files,
             commands::load_preferences,
             commands::save_preferences,
             commands::fetch_remote_changelog,

@@ -14,6 +14,8 @@ import type { GoogleFontPage } from '$lib/bindings/GoogleFontPage';
 import type { GoogleFontPageRequest } from '$lib/bindings/GoogleFontPageRequest';
 import type { GoogleFontPreview } from '$lib/bindings/GoogleFontPreview';
 import type { GoogleFontUninstallResult } from '$lib/bindings/GoogleFontUninstallResult';
+import type { ImportOutcome } from '$lib/bindings/ImportOutcome';
+import type { ImportPlan } from '$lib/bindings/ImportPlan';
 import type { LoadedPreferences } from '$lib/bindings/LoadedPreferences';
 import type { ManagedStorageStatus } from '$lib/bindings/ManagedStorageStatus';
 import type { Preferences } from '$lib/bindings/Preferences';
@@ -141,4 +143,20 @@ export function loadPreferences(): Promise<LoadedPreferences> {
 
 export function savePreferences(preferences: Preferences): Promise<void> {
 	return invoke<void>('save_preferences', { preferences });
+}
+
+/**
+ * Reviews font files without changing anything. Every verdict comes from the bytes: the paths are
+ * what the person chose in a dialog, and they are a question rather than an instruction.
+ */
+export function preflightFontImport(paths: string[]): Promise<ImportPlan> {
+	return invoke<ImportPlan>('preflight_font_import', { paths });
+}
+
+/**
+ * Imports font files, deciding everything again from the files themselves. Each file stands on its
+ * own, so the result says what happened to every one of them rather than only whether it all did.
+ */
+export function importFontFiles(paths: string[]): Promise<ImportOutcome[]> {
+	return invoke<ImportOutcome[]>('import_font_files', { paths });
 }

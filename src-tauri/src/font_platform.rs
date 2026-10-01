@@ -5,7 +5,10 @@ use ttf_parser::{Face, name_id};
 /// Every file `FontNest` writes into the user font directory starts with this. It is the first
 /// thing checked before anything is deleted, so a font the user installed themselves is never
 /// mistaken for one of ours.
-const MANAGED_FILE_PREFIX: &str = "FontNest-";
+/// The prefix every file `FontNest` installs carries, followed by the first characters of the
+/// digest of the bytes it was installed from. The ownership proof reads that digest back out of
+/// the name, so this is part of the evidence rather than decoration.
+pub const MANAGED_FILE_PREFIX: &str = "FontNest-";
 
 /// Where Windows records the fonts registered for the signed-in account only.
 #[cfg(windows)]
@@ -210,6 +213,55 @@ fn unicode_name(face: &Face<'_>, name_id: u16) -> Option<String> {
         .map(|name| name.trim().to_owned())
 }
 
+/// The font formats `FontNest` installs, and the word the operating system uses for each one in
+/// the registry.
+///
+/// Both belong together: a registration whose value name does not carry the word Windows expects
+/// for that format leaves a font registered but not usable. Deriving the name anywhere else would
+/// be a second copy of this table, and a copy that drifted would make an installed font
+/// unprovable, so everything goes through [`InstallableFormat`].
+const INSTALLABLE_FORMATS: &[(&str, &str)] = &[("ttf", "TrueType"), ("otf", "OpenType")];
+
+/// A font format this platform can install, recognized from a file name.
+///
+/// Holding it as a value rather than a string is what makes the registry name underivable for a
+/// format nothing recognized: there is no way to ask for one without having been given a format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InstallableFormat {
+    extension: &'static str,
+    registry_label: &'static str,
+}
+
+impl InstallableFormat {
+    /// The format `file_name` names, or `None` when it is not one `FontNest` installs.
+    ///
+    /// Font collections are deliberately absent. A `.ttc` holds several faces that Windows
+    /// registers together under names taken from inside the file, which is a different operation
+    /// from installing one face, and `FontNest` previews them rather than pretending otherwise.
+    #[must_use]
+    pub fn of_file_name(file_name: &str) -> Option<Self> {
+        let lowered = file_name.to_ascii_lowercase();
+        INSTALLABLE_FORMATS
+            .iter()
+            .find(|(extension, _)| lowered.ends_with(&format!(".{extension}")))
+            .map(|(extension, registry_label)| Self {
+                extension,
+                registry_label,
+            })
+    }
+
+    #[must_use]
+    pub const fn extension(self) -> &'static str {
+        self.extension
+    }
+
+    /// What the operating system calls this font once it is registered.
+    #[must_use]
+    pub fn registry_value_name(self, full_name: &str) -> String {
+        format!("{full_name} ({})", self.registry_label)
+    }
+}
+
 /// The one file name a provider artifact may be installed under.
 ///
 /// Install writes it and uninstall derives it again from the bundled manifest, so the name on the
@@ -219,9 +271,9 @@ fn unicode_name(face: &Face<'_>, name_id: u16) -> Option<String> {
 ///
 /// # Errors
 ///
-/// Returns [`FontPlatformError::InvalidFont`] when the artifact is not a `.ttf`, and
-/// [`FontPlatformError::InvalidMetadata`] when the name has nothing safe left in it or the hash
-/// is not a full hexadecimal digest.
+/// Returns [`FontPlatformError::InvalidFont`] when the file is not a format this platform
+/// installs, and [`FontPlatformError::InvalidMetadata`] when the name has nothing safe left in it
+/// or the hash is not a full hexadecimal digest.
 pub fn managed_file_name(
     original_file_name: &str,
     source_hash: &str,
@@ -230,9 +282,10 @@ pub fn managed_file_name(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or(FontPlatformError::InvalidMetadata)?;
+    let format =
+        InstallableFormat::of_file_name(file_name).ok_or(FontPlatformError::InvalidFont)?;
     let stem = file_name
-        .strip_suffix(".ttf")
-        .or_else(|| file_name.strip_suffix(".TTF"))
+        .get(..file_name.len() - (format.extension().len() + 1))
         .ok_or(FontPlatformError::InvalidFont)?;
     let safe_stem = stem
         .chars()
@@ -251,8 +304,9 @@ pub fn managed_file_name(
         return Err(FontPlatformError::InvalidMetadata);
     }
     Ok(format!(
-        "{MANAGED_FILE_PREFIX}{}-{safe_stem}.ttf",
-        &source_hash[..12]
+        "{MANAGED_FILE_PREFIX}{}-{safe_stem}.{}",
+        &source_hash[..12],
+        format.extension()
     ))
 }
 
@@ -325,10 +379,12 @@ pub fn plan_user_font_installation(
     source_hash: &str,
     metadata: &ValidatedFontMetadata,
 ) -> Result<PlatformInstallation, FontPlatformError> {
+    let file_name = managed_file_name(original_file_name, source_hash)?;
+    let format =
+        InstallableFormat::of_file_name(&file_name).ok_or(FontPlatformError::InvalidFont)?;
     Ok(PlatformInstallation {
-        installed_path: user_font_directory()?
-            .join(managed_file_name(original_file_name, source_hash)?),
-        registry_value_name: format!("{} (TrueType)", metadata.full_name),
+        installed_path: user_font_directory()?.join(&file_name),
+        registry_value_name: format.registry_value_name(&metadata.full_name),
         display_name: metadata.full_name.clone(),
     })
 }
@@ -373,7 +429,7 @@ pub fn is_managed_installation_path(_path: &Path) -> bool {
 /// only ever half of a decision.
 #[must_use]
 pub fn is_managed_file_name(name: &str) -> bool {
-    name.starts_with(MANAGED_FILE_PREFIX) && name.to_ascii_lowercase().ends_with(".ttf")
+    name.starts_with(MANAGED_FILE_PREFIX) && InstallableFormat::of_file_name(name).is_some()
 }
 
 #[cfg(not(windows))]
@@ -658,7 +714,7 @@ fn broadcast_font_change() {
 
 #[cfg(test)]
 mod tests {
-    use super::{FontPlatformError, managed_file_name};
+    use super::{FontPlatformError, InstallableFormat, is_managed_file_name, managed_file_name};
 
     /// Pins the assumption the Windows reveal path branches on: files inside the system
     /// font directory are not addressable as shell items, because Explorer renders that
@@ -742,5 +798,63 @@ mod tests {
             .expect_err("untrusted hashes must be rejected");
 
         assert!(matches!(error, FontPlatformError::InvalidMetadata));
+    }
+
+    // An OpenType font installed under a .ttf name is a font Windows will not serve, and one
+    // FontNest could no longer derive a matching name for.
+    #[test]
+    fn a_managed_name_keeps_the_format_the_file_actually_is() {
+        let hash = "047c92f6e2212473dc436020afed689527076d44";
+
+        assert_eq!(
+            managed_file_name("Cardo-Regular.otf", hash).expect("an OpenType name"),
+            "FontNest-047c92f6e221-Cardo-Regular.otf"
+        );
+        assert_eq!(
+            managed_file_name("Cardo-Regular.OTF", hash).expect("an OpenType name"),
+            "FontNest-047c92f6e221-Cardo-Regular.otf"
+        );
+    }
+
+    #[test]
+    fn formats_this_platform_does_not_install_have_no_managed_name() {
+        let hash = "047c92f6e2212473dc436020afed689527076d44";
+
+        for file_name in ["Noto.ttc", "Inter.woff2", "Inter.pfb", "Inter"] {
+            assert!(
+                matches!(
+                    managed_file_name(file_name, hash),
+                    Err(FontPlatformError::InvalidFont)
+                ),
+                "{file_name} must not resolve to a managed name"
+            );
+        }
+    }
+
+    // Installation and the ownership proof both derive the registration name from this table, so
+    // the words matter: Windows will not serve an OpenType font registered as a TrueType one.
+    #[test]
+    fn a_registration_is_named_the_way_its_format_requires() {
+        let truetype = InstallableFormat::of_file_name("FontNest-047c92f6e221-Inter.ttf")
+            .expect("a TrueType format");
+        let opentype = InstallableFormat::of_file_name("FontNest-047c92f6e221-Cardo.otf")
+            .expect("an OpenType format");
+
+        assert_eq!(
+            truetype.registry_value_name("Inter Regular"),
+            "Inter Regular (TrueType)"
+        );
+        assert_eq!(
+            opentype.registry_value_name("Cardo Regular"),
+            "Cardo Regular (OpenType)"
+        );
+    }
+
+    #[test]
+    fn a_managed_file_is_recognized_in_every_format_fontnest_installs() {
+        assert!(is_managed_file_name("FontNest-047c92f6e221-Inter.ttf"));
+        assert!(is_managed_file_name("FontNest-047c92f6e221-Cardo.otf"));
+        assert!(!is_managed_file_name("FontNest-047c92f6e221-Noto.ttc"));
+        assert!(!is_managed_file_name("Inter.ttf"));
     }
 }

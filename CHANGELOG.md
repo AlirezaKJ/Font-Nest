@@ -12,6 +12,18 @@ a bundled copy when you are offline.
 
 ### Added
 
+- You can install font files you already have. Import fonts in the library takes single files or a
+  whole folder, and before anything is written it shows you what it found: the family and style
+  inside each file, its version, what the font itself says about its licence and embedding, how
+  big it is, and the name it would be installed under. Files that cannot be installed say why,
+  each in its own words: a collection or a web font can be previewed but not installed, a file
+  that will not parse is named as such, one already installed is left alone, and a font Windows
+  owns is never claimed. Fonts install for your account only, and each file stands on its own, so
+  one bad file in a folder of twenty does not undo the nineteen that worked. As with Discover, the
+  whole operation is written down before it starts, so closing the app mid-import leaves nothing
+  half installed. Removing an imported font from inside FontNest is not there yet; Windows'
+  own font settings will do it in the meantime.
+
 - FontNest reopens where you left it. The window comes back at the size and position you gave it,
   maximized if that is how you closed it, and the app returns to the view you were last on with
   your search, filters, sort order and place in the list still there. If you closed it on a screen

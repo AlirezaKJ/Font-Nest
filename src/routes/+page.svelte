@@ -6,6 +6,8 @@
 
 	import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
 	import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
+	import type { ImportOutcome } from '$lib/bindings/ImportOutcome';
+	import type { ImportPlan } from '$lib/bindings/ImportPlan';
 	import type { FontOrigin } from '$lib/bindings/FontOrigin';
 	import type { ValidatedLocalFont } from '$lib/bindings/ValidatedLocalFont';
 	import { checkForUpdates } from '$lib/app-updater';
@@ -14,6 +16,7 @@
 	import AppTitleBar from '$lib/components/AppTitleBar.svelte';
 	import ConflictsView from '$lib/components/ConflictsView.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
+	import FontImportReview from '$lib/components/FontImportReview.svelte';
 	import LocalFontPreview from '$lib/components/LocalFontPreview.svelte';
 	import DiscoverFilterMenu, {
 		type DiscoverFilterOption
@@ -38,6 +41,7 @@
 		fontOrigin,
 		isSystemOnly
 	} from '$lib/fonts/font-origin';
+	import { importReviewed, reviewChosenFonts } from '$lib/fonts/import';
 	import { importLocalFontPreview, releaseLocalFontPreview } from '$lib/fonts/local-fonts';
 	import { hasUnseenRelease } from '$lib/release-notes/loader';
 	import { reorderIds, type ReorderPosition } from '$lib/reorder';
@@ -220,6 +224,10 @@
 	let pinnedFamilyIds = $state<string[]>([]);
 	let toast = $state<Toast | null>(null);
 	let localPreview = $state<ValidatedLocalFont | null>(null);
+	// The review a person is looking at, what the import then did, and whether it is still running.
+	let importPlan = $state<ImportPlan | null>(null);
+	let importOutcomes = $state<ImportOutcome[] | null>(null);
+	let importRunning = $state(false);
 	let prefersReducedMotion = $state(false);
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
 	let updateCheckTimer: ReturnType<typeof setTimeout> | undefined;
@@ -872,6 +880,42 @@
 		}
 	}
 
+	/**
+	 * Asks for font files and shows what FontNest found in them. Nothing is installed here: the
+	 * review is a report, and the import only happens if the person says so.
+	 */
+	async function openImportPicker() {
+		try {
+			const plan = await reviewChosenFonts(false);
+			if (!plan) return;
+			importOutcomes = null;
+			importPlan = plan;
+		} catch (error) {
+			showToast(commandErrorMessage(error), 'error');
+		}
+	}
+
+	async function confirmImport() {
+		if (!importPlan || importRunning) return;
+		importRunning = true;
+		try {
+			importOutcomes = await importReviewed(importPlan);
+			// Fonts the computer now has are fonts the catalogue should know about.
+			if (importOutcomes.some((outcome) => outcome.installed)) await refreshCatalogue();
+		} catch (error) {
+			showToast(commandErrorMessage(error), 'error');
+			closeImport();
+		} finally {
+			importRunning = false;
+		}
+	}
+
+	function closeImport() {
+		if (importRunning) return;
+		importPlan = null;
+		importOutcomes = null;
+	}
+
 	function closeLocalPreview() {
 		releaseLocalFontPreview(localPreview?.previewFamily);
 		localPreview = null;
@@ -1024,6 +1068,10 @@
 						</p>
 					</div>
 					<div class="header-actions">
+						<button type="button" class="secondary-action" onclick={openImportPicker}>
+							<Icon name="plus" size={16} />
+							<span>Import fonts</span>
+						</button>
 						<button
 							type="button"
 							class="primary-action"
@@ -1482,6 +1530,16 @@
 	<LocalFontPreview font={localPreview} {previewText} onClose={closeLocalPreview} />
 {/if}
 
+{#if importPlan}
+	<FontImportReview
+		plan={importPlan}
+		outcomes={importOutcomes}
+		importing={importRunning}
+		onConfirm={confirmImport}
+		onClose={closeImport}
+	/>
+{/if}
+
 <style>
 	.app-shell {
 		--titlebar-height: 48px;
@@ -1587,6 +1645,35 @@
 	}
 
 	.primary-action:active {
+		transform: translateY(1px);
+	}
+
+	/* Importing is the quieter of the two: previewing a file changes nothing, and installing one
+	   should not be the louder invitation of the pair. */
+	.secondary-action {
+		display: inline-flex;
+		height: 36px;
+		align-items: center;
+		justify-content: center;
+		gap: 7px;
+		padding: 0 12px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		color: var(--color-text);
+		background: var(--color-control);
+		font-size: var(--text-label);
+		font-weight: 650;
+		cursor: pointer;
+		transition:
+			background var(--motion-fast),
+			transform var(--motion-fast);
+	}
+
+	.secondary-action:hover {
+		background: var(--color-hover);
+	}
+
+	.secondary-action:active {
 		transform: translateY(1px);
 	}
 

@@ -369,15 +369,27 @@ Related: [[FontNest]] · [[Font Explorer Doc]] · [Product contract](PRODUCT.md)
 
 ## 10. Local import, managed install, update, uninstall, and activation
 
+> [!note] Fonts imported from this computer, 2026-09-30
+> An imported font has no bundled manifest behind it, which is what the ownership proof normally
+> derives a file name and digest from. `managed_ownership.rs` gained a second source of expectation
+> for them: the name `FontNest` gave the file carries the first twelve characters of the digest of
+> the bytes it was installed from, so a file in the per-user font directory whose own name states
+> what its contents hash to is making a claim only `FontNest` writes. Weaker than a manifest,
+> deliberately, because nothing stronger exists for a file off somebody's own disk; what it still
+> guarantees is that only a file in that directory, under a name `FontNest` derived, holding bytes
+> that hash to what the name says, registered under a value recomputed from those same bytes, can
+> ever be proven. Removing an imported font from inside the application is not wired up yet, so
+> that proof is currently exercised only by its tests.
+
 ### Import and preflight
 
-- [ ] **P1** Add trusted file, multi-file, folder, watched-folder, and drag/drop import.
+- [ ] **P1** Add trusted file, multi-file, folder, watched-folder, and drag/drop import. Partly shipped 2026-09-30: single files, several files at once, and a chosen folder all import. The folder search is bounded (four levels, 500 files, never through a link), because pointing at a downloads folder should not turn into reading a drive. Watched folders are not built. Drag and drop is not either, and not by oversight: `tauri.conf.json` sets `dragDropEnabled: false` on purpose so HTML drag and drop stays available for reordering saved previews, and `tauri-config.spec.ts` asserts it. Turning it on to collect dropped paths would break that, so a drop will have to read the bytes in the web view and hand those over instead, which is a different mechanism from the path-based one built here.
 - [ ] **P1** Add staged ZIP/archive import with entry-count and expanded-size caps plus traversal, absolute-path, symlink, reparse-point, and archive-bomb defenses.
-- [ ] **P1** Distinguish preview-only, installable, unsupported, corrupt, duplicate, and conflicting files before mutation.
-- [ ] **P1** Support TTC/OTC face review and make collection installation semantics explicit.
-- [ ] **P1** Show a preflight plan with faces, versions, licences, embedding rights, conflicts, destination, expected bytes, and protected boundaries.
-- [ ] **P1** Validate selected metadata against parsed bytes instead of trusting filenames or frontend labels.
-- [ ] **P1** Add per-file and batch progress, cancel, retry, partial-success reporting, and final audit summary.
+- [x] **P1** Distinguish preview-only, installable, unsupported, corrupt, duplicate, and conflicting files before mutation. Done 2026-09-30 apart from conflicting: `local_import.rs` returns one of eight verdicts per file, decided from the bytes rather than the extension. Installable, already installed (by content digest, so the same font under a new name is still the same font), chosen twice within one selection, preview only (a real font in a format Windows does not install from a file, which is collections and web fonts), unreadable, too large, owned by the operating system, and missing. Conflicting, meaning a family and style already installed from somewhere else, is not among them: it needs the scanned catalogue rather than the file, and it is advice rather than a safety decision, so it was left for the pass that has the catalogue to hand.
+- [x] **P1** Support TTC/OTC face review and make collection installation semantics explicit. Done 2026-09-30, by being explicit that they are not installed: a collection's faces are all read and reported, and the verdict is preview only. Windows registers the faces in a collection together under names taken from inside the file, which is a different operation from installing one face, and guessing at it would install something nobody chose.
+- [x] **P1** Show a preflight plan with faces, versions, licences, embedding rights, conflicts, destination, expected bytes, and protected boundaries. Done 2026-09-30 apart from conflicts, as above: the review names every face with its family, style, version, PostScript name, weight and glyph count, the licence description and URL the font states about itself, the OS/2 embedding permission in words, the file's size, the exact name it would be installed under, and for anything refused, which boundary refused it. Nothing is written until somebody says so.
+- [x] **P1** Validate selected metadata against parsed bytes instead of trusting filenames or frontend labels. Done 2026-09-30: every verdict, every name and the install target are derived by parsing the file. Paths arrive from the interface because a person chose them in a dialog, and they are treated as a question: the review answers it, and the import asks the whole question again from the files themselves, so a file that changed between being reviewed and being imported is refused rather than installed on an older reading.
+- [ ] **P1** Add per-file and batch progress, cancel, retry, partial-success reporting, and final audit summary. Partly shipped 2026-09-30: every file is reported on its own, and one that fails does not undo the ones that worked, because importing twenty fonts and losing nineteen to the twentieth is not a service to anybody. The result says what was installed and what was not, with the reason. Streaming progress, cancelling a run in flight, and retrying one file are not built: an import of a few dozen files is fast enough that none of them have been missed yet.
 - [ ] **P1** Offer atomic-family and best-effort-batch policies explicitly.
 
 ### Crash-safe managed operations

@@ -251,6 +251,25 @@ impl ManagedInstallationRepository {
         rows.collect()
     }
 
+    /// Every set of bytes this provider has installed, by content digest.
+    ///
+    /// An import asks this before it copies anything, so a font already on the computer is
+    /// reported as already installed rather than installed a second time under a second name.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the ledger cannot be read.
+    pub fn installed_source_hashes(
+        &self,
+        provider: &str,
+    ) -> Result<HashSet<String>, rusqlite::Error> {
+        let connection = self.open()?;
+        let mut statement = connection
+            .prepare("SELECT source_hash FROM managed_installations WHERE provider = ?1")?;
+        let rows = statement.query_map(params![provider], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
     pub fn installed_family_ids(&self, provider: &str) -> Result<HashSet<String>, rusqlite::Error> {
         let connection = self.open()?;
         let mut statement = connection.prepare(

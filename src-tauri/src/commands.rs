@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use fontdb::Source;
@@ -18,6 +19,7 @@ use crate::font_inspection::{self, CancelToken, FontInspectionError, ParserJsonS
 use crate::font_platform;
 use crate::google_fonts::{self, GoogleFontsError};
 use crate::local_fonts::{self, LocalFontError};
+use crate::local_import::{self, ImportOutcome, ImportPlan};
 use crate::managed_installations::ManagedInstallationRepository;
 use crate::managed_storage::ManagedStorage;
 use crate::preferences::{self, LoadedPreferences, Preferences};
@@ -553,6 +555,71 @@ pub fn save_preferences(
     preferences::save(&app_data_dir, &preferences).map_err(|error| {
         log::warn!("FontNest could not write its settings: {error}");
         CommandError::preferences_unavailable()
+    })
+}
+
+/// Reviews font files the person chose, without changing anything.
+///
+/// Reviewing is deliberately separate from importing. Installing a font changes the computer, and
+/// nobody should have to find out what a selection contained by letting it happen: this answers
+/// the question first, and every verdict in it is derived from the files themselves.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn preflight_font_import(
+    paths: Vec<String>,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<ImportPlan, CommandError> {
+    ensure_trusted_window(&window)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| CommandError::managed_storage_unavailable())?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let already_installed = ManagedInstallationRepository::in_app_data_dir(&app_data_dir)
+            .installed_source_hashes(local_import::LOCAL_PROVIDER)
+            .unwrap_or_default();
+        let chosen = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+        local_import::review(&chosen, &already_installed)
+    })
+    .await
+    .map_err(|_| CommandError::import_failed())
+}
+
+/// Imports the font files the person chose.
+///
+/// Everything the review decided is decided again here from the files themselves, because a file
+/// can change between being looked at and being imported. Each file stands on its own: the result
+/// says what happened to every one of them.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn import_font_files(
+    paths: Vec<String>,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Vec<ImportOutcome>, CommandError> {
+    ensure_trusted_window(&window)?;
+    // Fail closed: a ledger FontNest cannot read or trust means it cannot prove what it owns, so
+    // it must not put anything new on the computer.
+    app.state::<ManagedStorage>()
+        .ensure_writable()
+        .map_err(CommandError::managed_storage_recovery)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| CommandError::managed_storage_unavailable())?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = ManagedInstallationRepository::in_app_data_dir(&app_data_dir);
+        let chosen = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+        local_import::import(&chosen, &repository)
+    })
+    .await
+    .map_err(|_| CommandError::import_failed())?
+    .map_err(|error| {
+        log::warn!("FontNest could not import the chosen fonts: {error}");
+        CommandError::import_failed()
     })
 }
 

@@ -50,7 +50,11 @@ use sha1::{Digest, Sha1};
 use crate::dto::FontOrigin;
 use crate::font_identity::{FileIdentity, file_record};
 use crate::font_origin;
-use crate::font_platform::{self, FontPlatformError, managed_file_name, validate_font};
+use crate::font_platform::{
+    self, FontPlatformError, InstallableFormat, MANAGED_FILE_PREFIX, managed_file_name,
+    validate_font,
+};
+use crate::local_import::LOCAL_PROVIDER;
 
 /// What the ledger says about one installed font. Every field is untrusted input.
 #[derive(Debug, Clone, Copy)]
@@ -59,6 +63,9 @@ pub struct UninstallClaim<'a> {
     pub artifact_id: &'a str,
     pub installed_path: &'a str,
     pub registry_value_name: &'a str,
+    /// The digest the ledger recorded for these bytes. Untrusted, like every other field, and
+    /// used only as a second statement that has to agree with the file itself.
+    pub source_hash: &'a str,
 }
 
 /// What a provider's own bundled record says one artifact is. It comes from the binary, never from
@@ -103,6 +110,65 @@ pub trait ManagedEnvironment {
         registry_value_name: &str,
         path: &Path,
     ) -> Result<(), FontPlatformError>;
+}
+
+/// Where the expectation about a file comes from, which is the one thing that differs between a
+/// font from a provider and a font from this computer.
+///
+/// A provider publishes a manifest, and `FontNest` carries it in the binary, so the file name,
+/// digest and size are all evidence from outside the ledger. A font somebody imported has no such
+/// upstream by definition: it came off their own disk. What stands in for the manifest is the name
+/// `FontNest` gave the file when it installed it, which carries the first twelve characters of the
+/// digest of the bytes it was installed from. A file in the per-user font directory whose own name
+/// states the digest its contents hash to is making a claim that only `FontNest` writes and that
+/// nothing else in that directory can accidentally satisfy.
+///
+/// This is weaker than a manifest and deliberately so, because nothing stronger exists for a file
+/// that came from the person's own computer. What it still guarantees is what matters: the only
+/// files that can ever be proven are ones sitting in the per-user font directory, under a name
+/// `FontNest` derived, holding bytes that hash to what that name says, registered under a value
+/// recomputed from those same bytes. A ledger somebody edited can at most point the operation at a
+/// different font of exactly that description, which is a font the application would remove on
+/// request anyway.
+enum Expectation {
+    /// The provider's own record, compiled into this build.
+    Published(ProviderArtifact),
+    /// The file's own managed name, and the digest prefix it carries.
+    SelfCertified {
+        file_name: String,
+        digest_prefix: String,
+    },
+}
+
+impl Expectation {
+    fn file_name(&self) -> &str {
+        match self {
+            Self::Published(artifact) => &artifact.file_name,
+            Self::SelfCertified { file_name, .. } => file_name,
+        }
+    }
+
+    /// How many bytes may be read before the digest is checked. A manifest states the size; a
+    /// self-certified file is bounded by what this platform will install at all.
+    fn read_limit(&self) -> u64 {
+        match self {
+            Self::Published(artifact) => artifact.size_bytes,
+            Self::SelfCertified { .. } => MAX_SELF_CERTIFIED_BYTES,
+        }
+    }
+
+    /// Whether the bytes that were read are the bytes this file is supposed to hold.
+    fn accepts(&self, digest: &str, read_bytes: u64) -> bool {
+        match self {
+            Self::Published(artifact) => {
+                read_bytes == artifact.size_bytes
+                    && digest.eq_ignore_ascii_case(&artifact.content_hash)
+            }
+            Self::SelfCertified { digest_prefix, .. } => digest
+                .get(..digest_prefix.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(digest_prefix)),
+        }
+    }
 }
 
 /// Proof that one specific file on this computer is a font `FontNest` installed and may remove.
@@ -151,6 +217,56 @@ pub enum OwnershipRefusal {
     Unreadable,
 }
 
+/// Most bytes a self-certified font may hold. A file from this computer states no size anywhere
+/// outside itself, so the bound is what this platform is willing to install at all.
+const MAX_SELF_CERTIFIED_BYTES: u64 = 64 * 1024 * 1024;
+
+/// How many characters of the digest a managed file name carries.
+const DIGEST_PREFIX_LENGTH: usize = 12;
+
+/// Works out what this file is supposed to be, from the strongest evidence available for it.
+fn expectation_for(
+    claim: &UninstallClaim<'_>,
+    environment: &impl ManagedEnvironment,
+) -> Result<Expectation, OwnershipRefusal> {
+    if let Some(artifact) = environment.provider_artifact(claim.provider, claim.artifact_id) {
+        // Derived from the provider's record, exactly as installation derived it. A ledger row
+        // cannot widen this to a second name, so there is only ever one file an artifact may be
+        // removed as.
+        let file_name = managed_file_name(&artifact.file_name, &artifact.content_hash)
+            .map_err(|_| OwnershipRefusal::UnknownProvider)?;
+        return Ok(Expectation::Published(ProviderArtifact {
+            file_name,
+            ..artifact
+        }));
+    }
+
+    if claim.provider != LOCAL_PROVIDER {
+        return Err(OwnershipRefusal::UnknownProvider);
+    }
+
+    // Only the file name is taken from the claim, and only after it proves to be one FontNest
+    // writes. The directory it is looked for in comes from the platform, never from the ledger.
+    let file_name = Path::new(claim.installed_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(OwnershipRefusal::LedgerPathMismatch)?;
+    if !font_platform::is_managed_file_name(file_name) {
+        return Err(OwnershipRefusal::LedgerPathMismatch);
+    }
+    let digest_prefix = file_name
+        .strip_prefix(MANAGED_FILE_PREFIX)
+        .and_then(|rest| rest.get(..DIGEST_PREFIX_LENGTH))
+        .filter(|prefix| prefix.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or(OwnershipRefusal::LedgerPathMismatch)?
+        .to_owned();
+
+    Ok(Expectation::SelfCertified {
+        file_name: file_name.to_owned(),
+        digest_prefix,
+    })
+}
+
 /// Decides whether one claimed installation may be uninstalled.
 ///
 /// # Errors
@@ -161,13 +277,8 @@ pub fn authorize_uninstall(
     claim: &UninstallClaim<'_>,
     environment: &impl ManagedEnvironment,
 ) -> Result<ProvenOwnership, OwnershipRefusal> {
-    let artifact = environment
-        .provider_artifact(claim.provider, claim.artifact_id)
-        .ok_or(OwnershipRefusal::UnknownProvider)?;
-    // Derived from the provider's record, exactly as installation derived it. A ledger row cannot
-    // widen this to a second name, so there is only ever one file an artifact may be removed as.
-    let file_name = managed_file_name(&artifact.file_name, &artifact.content_hash)
-        .map_err(|_| OwnershipRefusal::UnknownProvider)?;
+    let expectation = expectation_for(claim, environment)?;
+    let file_name = expectation.file_name().to_owned();
     let directory = environment
         .user_font_directory()
         .ok_or(OwnershipRefusal::FontDirectoryUnavailable)?;
@@ -187,7 +298,7 @@ pub fn authorize_uninstall(
     if !metadata.is_file() {
         return Err(OwnershipRefusal::Missing);
     }
-    if metadata.len() != artifact.size_bytes {
+    if metadata.len() > expectation.read_limit() {
         return Err(OwnershipRefusal::ContentMismatch);
     }
 
@@ -210,23 +321,32 @@ pub fn authorize_uninstall(
         return Err(OwnershipRefusal::Redirected);
     }
 
-    // Bounded by the size the manifest declares, so a file that grew between the check and the
-    // read cannot pull an unbounded amount into memory.
-    let mut bytes = Vec::with_capacity(usize::try_from(artifact.size_bytes).unwrap_or_default());
+    // Bounded before anything is read, so a file that grew between the check and the read cannot
+    // pull an unbounded amount into memory.
+    let limit = expectation.read_limit();
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or_default());
     file.by_ref()
-        .take(artifact.size_bytes)
+        .take(limit)
         .read_to_end(&mut bytes)
         .map_err(|_| OwnershipRefusal::Unreadable)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != artifact.size_bytes
-        || !content_hash(&bytes).eq_ignore_ascii_case(&artifact.content_hash)
-    {
+    let digest = content_hash(&bytes);
+    if !expectation.accepts(&digest, u64::try_from(bytes.len()).unwrap_or(u64::MAX)) {
+        return Err(OwnershipRefusal::ContentMismatch);
+    }
+    // The ledger is not evidence, but it is a second statement, and a font FontNest installed has
+    // no reason for its recorded digest to disagree with the bytes that are there.
+    if !claim.source_hash.is_empty() && !digest.eq_ignore_ascii_case(claim.source_hash) {
         return Err(OwnershipRefusal::ContentMismatch);
     }
 
     // The registration name is recomputed from the bytes rather than read out of the ledger, so
     // the value about to be removed is the one this font's own metadata produces.
     let font = validate_font(&bytes).map_err(|_| OwnershipRefusal::ContentMismatch)?;
-    let registry_value_name = format!("{} (TrueType)", font.full_name);
+    // Derived through the same table installation used, so a format whose registration Windows
+    // names differently cannot end up unprovable here.
+    let format =
+        InstallableFormat::of_file_name(&file_name).ok_or(OwnershipRefusal::LedgerPathMismatch)?;
+    let registry_value_name = format.registry_value_name(&font.full_name);
     if claim.registry_value_name != registry_value_name {
         return Err(OwnershipRefusal::RegistryMismatch);
     }
@@ -247,7 +367,7 @@ pub fn authorize_uninstall(
         path,
         registry_value_name,
         display_name: font.full_name,
-        content_hash: artifact.content_hash,
+        content_hash: digest,
         identity: record.identity,
     })
 }
@@ -364,6 +484,7 @@ mod tests {
         authorize_uninstall, content_hash,
     };
     use crate::font_platform::{FontPlatformError, managed_file_name, validate_font};
+    use crate::local_import::LOCAL_PROVIDER;
 
     /// Authorization runs on real bytes, so the tests do too: a font Windows ships stands in for a
     /// provider artifact, which keeps fonts the repository would have to license out of it.
@@ -410,6 +531,7 @@ mod tests {
         path: PathBuf,
         registry_value_name: String,
         bytes: Vec<u8>,
+        source_hash: String,
     }
 
     impl Installed {
@@ -419,6 +541,7 @@ mod tests {
                 artifact_id: ARTIFACT,
                 installed_path,
                 registry_value_name: &self.registry_value_name,
+                source_hash: &self.source_hash,
             }
         }
 
@@ -470,6 +593,7 @@ mod tests {
             },
             path,
             registry_value_name,
+            source_hash: content_hash(&bytes),
             bytes,
         })
     }
@@ -712,5 +836,117 @@ mod tests {
     #[cfg(not(any(windows, unix)))]
     fn link_file(_target: &Path, _link: &Path) -> bool {
         false
+    }
+
+    /// A font imported from this computer, which has no manifest behind it. The environment knows
+    /// nothing about it on purpose: everything the proof needs has to come from the file itself.
+    fn import(root: &Path) -> Option<Installed> {
+        let mut installed = install(root)?;
+        installed.environment.artifacts.clear();
+        Some(installed)
+    }
+
+    fn local_claim<'a>(installed: &'a Installed, path: &'a str) -> UninstallClaim<'a> {
+        UninstallClaim {
+            provider: LOCAL_PROVIDER,
+            artifact_id: &installed.source_hash,
+            installed_path: path,
+            registry_value_name: &installed.registry_value_name,
+            source_hash: &installed.source_hash,
+        }
+    }
+
+    // A font from this computer is proven by its own name and its own bytes, because there is no
+    // manifest to prove it against.
+    #[test]
+    fn an_imported_font_is_proven_by_the_name_fontnest_gave_it() {
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let Some(installed) = import(root.path()) else {
+            return;
+        };
+        let path = installed.recorded_path();
+
+        let proof = authorize_uninstall(&local_claim(&installed, &path), &installed.environment)
+            .expect("a font FontNest installed from a file is still one it installed");
+
+        assert_eq!(proof.content_hash, installed.source_hash);
+        assert_eq!(proof.registry_value_name, installed.registry_value_name);
+    }
+
+    #[test]
+    fn an_imported_font_someone_replaced_is_refused() {
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let Some(installed) = import(root.path()) else {
+            return;
+        };
+        let mut swapped = installed.bytes.clone();
+        swapped.extend_from_slice(b"not the bytes this name claims");
+        std::fs::write(&installed.path, &swapped).expect("the font is replaced");
+        let path = installed.recorded_path();
+
+        let refusal = authorize_uninstall(&local_claim(&installed, &path), &installed.environment)
+            .expect_err("a file that no longer hashes to its own name is not ours");
+
+        assert_eq!(refusal, OwnershipRefusal::ContentMismatch);
+    }
+
+    // The file name is the only thing taken from the ledger, and only after it proves to be one
+    // FontNest writes. A row naming anything else names a file this never touches.
+    #[test]
+    fn a_row_naming_a_file_fontnest_never_named_is_refused() {
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let Some(installed) = import(root.path()) else {
+            return;
+        };
+        let victim = installed
+            .path
+            .parent()
+            .expect("a font directory")
+            .join("SomebodyElses.ttf");
+        std::fs::write(&victim, &installed.bytes).expect("a font that is not ours");
+        let path = victim.to_string_lossy().into_owned();
+
+        let refusal = authorize_uninstall(&local_claim(&installed, &path), &installed.environment)
+            .expect_err("only files FontNest named can be proven");
+
+        assert_eq!(refusal, OwnershipRefusal::LedgerPathMismatch);
+        assert!(victim.exists(), "and the file is still there");
+    }
+
+    // The ledger is not evidence, but it is a second statement, and both have to agree.
+    #[test]
+    fn an_imported_font_whose_recorded_digest_disagrees_is_refused() {
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let Some(installed) = import(root.path()) else {
+            return;
+        };
+        let path = installed.recorded_path();
+        let tampered = UninstallClaim {
+            source_hash: "0000000000000000000000000000000000000000",
+            ..local_claim(&installed, &path)
+        };
+
+        let refusal = authorize_uninstall(&tampered, &installed.environment)
+            .expect_err("a recorded digest that disagrees with the file ends the operation");
+
+        assert_eq!(refusal, OwnershipRefusal::ContentMismatch);
+    }
+
+    #[test]
+    fn a_provider_this_build_does_not_know_is_still_refused() {
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let Some(installed) = import(root.path()) else {
+            return;
+        };
+        let path = installed.recorded_path();
+        let unknown = UninstallClaim {
+            provider: "some-other-shop",
+            ..local_claim(&installed, &path)
+        };
+
+        let refusal = authorize_uninstall(&unknown, &installed.environment)
+            .expect_err("only providers this build knows, and this computer, are proven");
+
+        assert_eq!(refusal, OwnershipRefusal::UnknownProvider);
     }
 }

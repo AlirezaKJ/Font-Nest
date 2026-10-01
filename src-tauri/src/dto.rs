@@ -510,6 +510,13 @@ impl CommandError {
         }
     }
 
+    pub const fn import_failed() -> Self {
+        Self {
+            code: "import_failed",
+            message: "FontNest could not finish importing those fonts. Nothing was left half installed.",
+        }
+    }
+
     pub const fn preferences_unavailable() -> Self {
         Self {
             code: "preferences_unavailable",

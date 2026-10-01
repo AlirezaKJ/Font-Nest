@@ -106,6 +106,7 @@ pub fn uninstall_family(
             artifact_id: &record.artifact_id,
             installed_path: &record.installed_path,
             registry_value_name: &record.registry_value_name,
+            source_hash: &record.source_hash,
         };
         match authorize_uninstall(&claim, environment) {
             Ok(proof) => proven.push((record, proof)),
