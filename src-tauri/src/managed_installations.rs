@@ -722,11 +722,21 @@ impl ManagedInstallationRepository {
     /// Returns the `SQLite` error when the ledger cannot be read. The caller must treat that as
     /// "possibly owned" and leave the file alone.
     pub fn is_recorded_installation(&self, installed_path: &str) -> Result<bool, rusqlite::Error> {
-        self.open()?.query_row(
-            "SELECT EXISTS(SELECT 1 FROM managed_installations WHERE installed_path = ?1)",
-            params![installed_path],
-            |row| row.get(0),
-        )
+        // Compared the way the ownership proof compares paths rather than as plain strings.
+        // Windows writes the same path two ways, and this answer decides whether recovery leaves
+        // a font alone or takes it away: a row that failed to match because of a prefix would
+        // delete a font somebody owns.
+        let connection = self.open()?;
+        let mut statement =
+            connection.prepare("SELECT installed_path FROM managed_installations")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let recorded: String = row.get(0)?;
+            if crate::managed_ownership::names_the_same_path(&recorded, installed_path) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Gives every scanned family and face the ID the ledger already knows it by, and records the
@@ -1458,5 +1468,37 @@ mod tests {
         assert_eq!(providers.len(), 2);
         assert!(providers.contains(&"google-fonts".to_owned()));
         assert!(providers.contains(&"local".to_owned()));
+    }
+
+    // Recovery asks this before it undoes an interrupted installation, and a false answer takes a
+    // font away. Windows writes the same path two ways, and rows written by older builds hold the
+    // extended-length one, so comparing as plain strings would delete a font somebody owns.
+    #[test]
+    fn a_recorded_installation_is_recognized_however_its_path_was_spelled() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let repository = ready_repository(temp.path());
+        let record = sample_record();
+        repository
+            .commit_operation(OPERATION, std::slice::from_ref(&record))
+            .expect("the installation");
+
+        assert!(
+            repository
+                .is_recorded_installation(&record.installed_path)
+                .expect("the lookup"),
+            "the path exactly as it was stored"
+        );
+        assert!(
+            repository
+                .is_recorded_installation(&format!(r"\\?\{}", record.installed_path))
+                .expect("the lookup"),
+            "and the same path spelled the extended-length way"
+        );
+        assert!(
+            !repository
+                .is_recorded_installation(r"C:\Windows\Fonts\arial.ttf")
+                .expect("the lookup"),
+            "but not a file nothing recorded"
+        );
     }
 }

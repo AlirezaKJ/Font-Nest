@@ -55,6 +55,20 @@ a bundled copy when you are offline.
   fonts found and no conflicts found, are set in Instrument Serif. Nothing here needs a network
   connection, and neither typeface joins your catalogue or can be installed from it.
 
+### Fixed
+
+- A font that lost its Windows registration could not be removed. FontNest refused, saying Windows
+  no longer had it registered, and since the file was still sitting in your font folder there was
+  no way to get rid of it except by hand. A missing registration means the font is already out of
+  service, not that it stopped being FontNest's to take back, so it is now removed and set aside
+  like any other. A registration that points at a _different_ file is still refused, because
+  removing that one would take another font out of service.
+
+- Some fonts could not be removed at all, with FontNest saying its record did not match where
+  the font actually was. Windows writes the same path two ways, a plain one and a longer form,
+  and a font recorded the longer way never matched the file it named. They match now, whichever
+  way the path was written down.
+
 ## [0.1.5] - 2026-09-14
 
 ### Added

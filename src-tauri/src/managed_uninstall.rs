@@ -1028,4 +1028,33 @@ mod tests {
 
         assert_eq!(refusal, RestoreRefusal::AlreadyInstalled);
     }
+
+    // A font can lose its registration while its file stays put: Windows' own font settings take
+    // it out of service and leave the file behind. FontNest put that file there, so it has to be
+    // able to take it back, or the only way out is for somebody to go and delete it by hand.
+    #[test]
+    fn a_font_that_lost_its_registration_is_still_removed() {
+        let (_temp, installed) = installed!(temp);
+        installed.environment.registry.borrow_mut().clear();
+
+        let outcome = uninstall_family(
+            &installed.repository,
+            &installed.app_data_dir,
+            PROVIDER,
+            FAMILY,
+            &[],
+            &installed.environment,
+        )
+        .expect("a file FontNest placed stays FontNest's to take back");
+
+        assert_eq!(outcome.removed.len(), 1);
+        assert!(outcome.refused.is_empty());
+        assert!(!installed.path.exists(), "the font leaves the font folder");
+        assert_eq!(
+            std::fs::read(quarantined(&installed.app_data_dir).expect("the quarantined file"))
+                .expect("the quarantined bytes"),
+            installed.bytes,
+            "and is still set aside rather than deleted"
+        );
+    }
 }

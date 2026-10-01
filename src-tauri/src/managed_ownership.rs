@@ -350,10 +350,15 @@ pub fn authorize_uninstall(
     if claim.registry_value_name != registry_value_name {
         return Err(OwnershipRefusal::RegistryMismatch);
     }
-    let registered = environment
-        .registered_font_path(&registry_value_name)
-        .ok_or(OwnershipRefusal::RegistryMismatch)?;
-    if !registers_the_same_file(&registered, &path) {
+    // A value that names another file belongs to another font, and deleting it would unregister
+    // that font instead of this one. A value that is not there at all is a different situation:
+    // there is nothing to unregister, and the font is still ours by everything that does not
+    // depend on the registry, which is the name it was installed under, where it sits, and the
+    // bytes it holds. Refusing that would strand a file `FontNest` put on the computer and would
+    // never take back, which is the opposite of what this module is for.
+    if let Some(registered) = environment.registered_font_path(&registry_value_name)
+        && !registers_the_same_file(&registered, &path)
+    {
         return Err(OwnershipRefusal::RegistryMismatch);
     }
 
@@ -405,13 +410,42 @@ pub fn content_hash(bytes: &[u8]) -> String {
 /// Windows paths differ in case without differing at all, so a row written by an earlier version,
 /// or by somebody editing the file, is judged the way the filesystem would judge it.
 fn same_path(left: &Path, right: &Path) -> bool {
+    names_the_same_path(
+        &left.as_os_str().to_string_lossy(),
+        &right.as_os_str().to_string_lossy(),
+    )
+}
+
+/// Whether two recorded paths name the same file, judged before either has to exist.
+///
+/// Shared with the ledger, which compares the paths it stored against the paths a journal holds.
+/// Both have to agree about what counts as the same path, or one of them decides a font is not the
+/// font it is.
+#[must_use]
+pub fn names_the_same_path(left: &str, right: &str) -> bool {
     if cfg!(windows) {
-        left.as_os_str()
-            .to_string_lossy()
-            .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+        without_verbatim_prefix(left).eq_ignore_ascii_case(without_verbatim_prefix(right))
     } else {
         left == right
     }
+}
+
+/// Windows spells the same path two ways, and both reach this comparison.
+///
+/// A path built by joining is `C:\...`, and one that has been through `canonicalize`
+/// comes back extended-length as `\\?\C:\...`. They name the same file, and
+/// ledger rows hold both: an installation writes the joined form, while a row written from a
+/// verified path, or by an older build, holds the canonical one. Treating the prefix as a
+/// difference made such a row name a file nothing could derive, so the font could never be
+/// removed.
+///
+/// Only the disk form is unwrapped. A verbatim UNC path is a different shape again, and the
+/// per-user font directory is never one.
+fn without_verbatim_prefix(path: &str) -> &str {
+    if path.starts_with(r"\\?\UNC\") {
+        return path;
+    }
+    path.strip_prefix(r"\\?\").unwrap_or(path)
 }
 
 /// Whether a registry value names the file a proof is about.
@@ -626,6 +660,26 @@ mod tests {
         assert_eq!(proof.content_hash, content_hash(&installed.bytes));
     }
 
+    // Windows writes the same path two ways. A row holding the extended-length form, which is what
+    // `canonicalize` returns and what older builds recorded, names exactly the file the derivation
+    // produces, so it has to be judged the same. Treating the prefix as a difference left those
+    // fonts impossible to remove.
+    #[test]
+    fn a_ledger_row_written_the_extended_length_way_names_the_same_file() {
+        let (_temp, installed) = installed!(temp);
+        let verbatim = format!(r"\\?\{}", installed.recorded_path());
+
+        let proof = authorize_uninstall(&installed.claim(&verbatim), &installed.environment)
+            .expect("the same file spelled the other way is still the same file");
+
+        // The proof carries the resolved path, which is the extended-length spelling on Windows,
+        // so the two are compared the way the filesystem compares them.
+        assert_eq!(
+            proof.path,
+            std::fs::canonicalize(&installed.path).expect("the installed file resolves")
+        );
+    }
+
     #[test]
     fn a_ledger_row_pointing_at_another_file_is_refused() {
         let (temp, installed) = installed!(temp);
@@ -728,16 +782,20 @@ mod tests {
         assert_eq!(refusal, OwnershipRefusal::RegistryMismatch);
     }
 
+    // A font FontNest installed can lose its registration: Windows' own font settings can take one
+    // out of service and leave the file behind. Nothing is then left to unregister, and everything
+    // that proves the file is ours is still true, so refusing would strand a file FontNest placed
+    // with no way to take it back.
     #[test]
-    fn an_unregistered_font_is_refused() {
+    fn a_font_whose_registration_is_gone_can_still_be_taken_back() {
         let (_temp, mut installed) = installed!(temp);
         installed.environment.registry.clear();
         let path = installed.recorded_path();
 
-        let refusal = authorize_uninstall(&installed.claim(&path), &installed.environment)
-            .expect_err("a font with no registration was not installed by FontNest");
+        let proof = authorize_uninstall(&installed.claim(&path), &installed.environment)
+            .expect("a file FontNest placed stays FontNest's to take back");
 
-        assert_eq!(refusal, OwnershipRefusal::RegistryMismatch);
+        assert_eq!(proof.registry_value_name, installed.registry_value_name);
     }
 
     #[test]
