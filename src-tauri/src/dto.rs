@@ -539,6 +539,9 @@ pub struct QuarantinedFontSummary {
     /// number, and a binding that said `bigint` would describe something that never arrives.
     #[ts(type = "number")]
     pub removed_at: i64,
+    /// What the set-aside file is holding, so the space can be named before it is reclaimed.
+    /// Zero when the file is no longer there to measure.
+    pub size_bytes: u32,
 }
 
 /// Everything `FontNest` is looking after: what is installed, and what it has set aside.
@@ -568,6 +571,13 @@ impl CommandError {
         Self {
             code: "managed_inventory_unavailable",
             message: "FontNest could not read what it has installed.",
+        }
+    }
+
+    pub const fn font_discard_failed() -> Self {
+        Self {
+            code: "font_discard_failed",
+            message: "FontNest could not delete that set-aside font. It is still there.",
         }
     }
 

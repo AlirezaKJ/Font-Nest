@@ -12,7 +12,14 @@
 	} from '$lib/app-updater';
 
 	import type { ManagedFontInventory } from '$lib/bindings/ManagedFontInventory';
-	import { byFamily, inventorySummary, removedAgo, sourceLabel } from '$lib/fonts/managed';
+	import {
+		byFamily,
+		formatBytes,
+		inventorySummary,
+		removedAgo,
+		setAsideBytes,
+		sourceLabel
+	} from '$lib/fonts/managed';
 
 	import Icon from './Icon.svelte';
 
@@ -29,7 +36,8 @@
 		inventory,
 		busyId,
 		onRemove,
-		onRestore
+		onRestore,
+		onDiscard
 	}: {
 		theme: ThemePreference;
 		density: DensityPreference;
@@ -45,7 +53,12 @@
 		busyId: string | null;
 		onRemove: (id: string) => void;
 		onRestore: (id: string) => void;
+		onDiscard: (id: string) => void;
 	} = $props();
+
+	// Deleting is the one thing here that cannot be undone, so it asks in place rather than behind
+	// a dialog that would make it feel like every other action.
+	let confirmingId = $state<string | null>(null);
 
 	let updatePercent = $derived(progressPercent($appUpdater.downloaded, $appUpdater.total));
 	let updateBusy = $derived(
@@ -240,23 +253,71 @@
 
 				{#if inventory.quarantined.length}
 					<div class="set-aside">
-						<p class="set-aside-title">Set aside</p>
+						<p class="set-aside-title">
+							Set aside · {formatBytes(setAsideBytes(inventory.quarantined))}
+						</p>
 						<ul class="managed-list">
 							{#each inventory.quarantined as font (font.id)}
-								<li class="managed-font">
-									<span class="font-name">{font.displayName}</span>
-									<span class="font-source"
-										>{sourceLabel(font)} · removed {removedAgo(
-											font.removedAt
-										)}</span
-									>
-									<button
-										type="button"
-										disabled={busyId === font.id}
-										onclick={() => onRestore(font.id)}
-									>
-										{busyId === font.id ? 'Putting back…' : 'Put back'}
-									</button>
+								<li class="managed-font set-aside-font">
+									<div class="set-aside-row">
+										<span class="font-name">{font.displayName}</span>
+										<span class="font-source">
+											{sourceLabel(font)} · removed {removedAgo(
+												font.removedAt
+											)} ·
+											{formatBytes(font.sizeBytes)}
+										</span>
+										<button
+											type="button"
+											disabled={busyId === font.id}
+											onclick={() => onRestore(font.id)}
+										>
+											{busyId === font.id ? 'Working…' : 'Put back'}
+										</button>
+										<button
+											type="button"
+											class="discard"
+											disabled={busyId === font.id}
+											onclick={() =>
+												(confirmingId =
+													confirmingId === font.id ? null : font.id)}
+										>
+											Delete
+										</button>
+									</div>
+
+									{#if confirmingId === font.id}
+										<div
+											class="confirm"
+											role="group"
+											aria-label="Confirm deletion"
+										>
+											<p>
+												Deleting takes {font.displayName} off this computer for
+												good. It is the one thing FontNest cannot undo, and it
+												frees
+												{formatBytes(font.sizeBytes)}.
+											</p>
+											<div class="confirm-actions">
+												<button
+													type="button"
+													onclick={() => (confirmingId = null)}
+												>
+													Keep it
+												</button>
+												<button
+													type="button"
+													class="discard"
+													onclick={() => {
+														confirmingId = null;
+														onDiscard(font.id);
+													}}
+												>
+													Delete permanently
+												</button>
+											</div>
+										</div>
+									{/if}
 								</li>
 							{/each}
 						</ul>
@@ -551,6 +612,46 @@
 	.managed-font button:disabled {
 		cursor: progress;
 		opacity: 0.6;
+	}
+
+	.set-aside-font {
+		flex-direction: column;
+		align-items: stretch;
+		gap: var(--space-sm);
+	}
+
+	.set-aside-row {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--space-md);
+	}
+
+	.managed-font button.discard {
+		border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-border));
+		color: var(--color-danger);
+	}
+
+	.managed-font button.discard:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--color-danger) 12%, var(--color-raised));
+	}
+
+	.confirm {
+		padding: var(--space-sm);
+		border: 1px solid color-mix(in srgb, var(--color-danger) 45%, var(--color-border));
+		border-radius: var(--radius-sm);
+		background: color-mix(in srgb, var(--color-danger) 7%, var(--color-panel));
+	}
+
+	.confirm p {
+		margin: 0 0 var(--space-sm);
+		max-width: 58ch;
+		font-size: var(--text-micro);
+	}
+
+	.confirm-actions {
+		display: flex;
+		gap: var(--space-sm);
 	}
 
 	.set-aside-title {

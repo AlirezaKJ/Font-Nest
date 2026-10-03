@@ -42,7 +42,7 @@
 		isSystemOnly
 	} from '$lib/fonts/font-origin';
 	import { importReviewed, reviewChosenFonts } from '$lib/fonts/import';
-	import { EMPTY_INVENTORY, refusalDetail } from '$lib/fonts/managed';
+	import { EMPTY_INVENTORY, formatBytes, refusalDetail } from '$lib/fonts/managed';
 	import { importLocalFontPreview, releaseLocalFontPreview } from '$lib/fonts/local-fonts';
 	import { hasUnseenRelease } from '$lib/release-notes/loader';
 	import { reorderIds, type ReorderPosition } from '$lib/reorder';
@@ -56,6 +56,7 @@
 	import * as preferencesStore from '$lib/preferences/store';
 	import { isStickySurfaceElevated } from '$lib/sticky-surface';
 	import {
+		discardManagedFont,
 		managedFontInventory,
 		removeManagedFont,
 		restoreManagedFont
@@ -973,6 +974,20 @@
 		}
 	}
 
+	async function discardManagedFontById(id: string) {
+		if (managedBusyId) return;
+		managedBusyId = id;
+		try {
+			const freed = await discardManagedFont(id);
+			showToast(`Deleted for good. ${formatBytes(freed)} freed.`, 'success');
+			await refreshManagedInventory();
+		} catch (error) {
+			showToast(commandErrorMessage(error), 'error');
+		} finally {
+			managedBusyId = null;
+		}
+	}
+
 	function closeImport() {
 		if (importRunning) return;
 		importPlan = null;
@@ -1566,6 +1581,7 @@
 				busyId={managedBusyId}
 				onRemove={removeManagedFontById}
 				onRestore={restoreManagedFontById}
+				onDiscard={discardManagedFontById}
 			/>
 		{/if}
 	</main>

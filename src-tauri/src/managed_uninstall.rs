@@ -273,6 +273,65 @@ pub fn restore_quarantined_font(
         .map_err(|_| RestoreRefusal::Ledger)
 }
 
+/// Why a font that was set aside could not be discarded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DiscardRefusal {
+    #[error("the quarantined file is not inside the folder FontNest sets fonts aside in")]
+    OutsideQuarantine,
+    #[error("the quarantined file could not be deleted")]
+    Undeletable,
+    #[error("the managed installation ledger is unavailable")]
+    Ledger,
+}
+
+/// Deletes a font that was set aside, for good, and reports the bytes that frees.
+///
+/// This is the one thing in `FontNest` that does not keep what it takes. Everywhere else a removal
+/// is a move and a record, and this is the step that turns that into a deletion, so the path is
+/// checked rather than taken: it has to be inside the quarantine folder as the filesystem
+/// resolves it, and it must not be a link, because following one would delete something somewhere
+/// else entirely. The row goes only after the file does, so a failed delete leaves a font still
+/// listed rather than a record of a file nobody can find.
+///
+/// # Errors
+///
+/// Returns the [`DiscardRefusal`] naming the check that stopped. A refusal leaves both the file
+/// and the record exactly as they were.
+pub fn discard_quarantined_font(
+    repository: &ManagedInstallationRepository,
+    font: &QuarantinedFont,
+    app_data_dir: &Path,
+) -> Result<u64, DiscardRefusal> {
+    let quarantine_root = std::fs::canonicalize(app_data_dir.join(QUARANTINE_DIRECTORY))
+        .map_err(|_| DiscardRefusal::OutsideQuarantine)?;
+    let path = Path::new(&font.quarantine_path);
+
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|_| DiscardRefusal::OutsideQuarantine)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(DiscardRefusal::OutsideQuarantine);
+    }
+    let resolved = std::fs::canonicalize(path).map_err(|_| DiscardRefusal::OutsideQuarantine)?;
+    if !resolved.starts_with(&quarantine_root) {
+        return Err(DiscardRefusal::OutsideQuarantine);
+    }
+
+    let freed = metadata.len();
+    std::fs::remove_file(&resolved).map_err(|_| DiscardRefusal::Undeletable)?;
+    // The per-operation folder has nothing left in it once its font is gone. Removing it only
+    // when it is empty means a folder still holding something is never touched.
+    if let Some(parent) = resolved.parent()
+        && parent != quarantine_root
+    {
+        let _ = std::fs::remove_dir(parent);
+    }
+
+    repository
+        .forget_quarantined(&font.id)
+        .map_err(|_| DiscardRefusal::Ledger)?;
+    Ok(freed)
+}
+
 /// When a removal happened, for an interface that lists what can still be put back.
 fn seconds_since_epoch() -> i64 {
     std::time::SystemTime::now()
@@ -449,12 +508,14 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        QUARANTINE_DIRECTORY, RestoreRefusal, UninstallOutcome, restore_quarantined_font,
-        restore_uninstalled_font, uninstall_family,
+        DiscardRefusal, QUARANTINE_DIRECTORY, RestoreRefusal, UninstallOutcome,
+        discard_quarantined_font, restore_quarantined_font, restore_uninstalled_font,
+        uninstall_family,
     };
     use crate::font_platform::{FontPlatformError, managed_file_name, validate_font};
     use crate::managed_installations::{
         ManagedInstallationRecord, ManagedInstallationRepository, OperationKind, OperationStep,
+        QuarantinedFont,
     };
     use crate::managed_ownership::{
         ManagedEnvironment, OwnershipRefusal, ProviderArtifact, content_hash,
@@ -1055,6 +1116,96 @@ mod tests {
                 .expect("the quarantined bytes"),
             installed.bytes,
             "and is still set aside rather than deleted"
+        );
+    }
+
+    // The one operation that does not keep what it takes, so the containment it checks is the only
+    // thing standing between "reclaim this space" and deleting whatever a path happens to name.
+    #[test]
+    fn discarding_a_set_aside_font_frees_its_space_and_forgets_it() {
+        let (_temp, installed) = installed!(temp);
+        uninstall_family(
+            &installed.repository,
+            &installed.app_data_dir,
+            PROVIDER,
+            FAMILY,
+            &[],
+            &installed.environment,
+        )
+        .expect("the removal");
+        let set_aside = installed
+            .repository
+            .quarantined_fonts()
+            .expect("the quarantine")
+            .into_iter()
+            .next()
+            .expect("one set aside");
+        let quarantined = PathBuf::from(&set_aside.quarantine_path);
+
+        let freed =
+            discard_quarantined_font(&installed.repository, &set_aside, &installed.app_data_dir)
+                .expect("a file FontNest set aside is one it may delete");
+
+        assert_eq!(freed, installed.bytes.len() as u64);
+        assert!(!quarantined.exists(), "the file is gone");
+        assert!(
+            installed
+                .repository
+                .quarantined_fonts()
+                .expect("the quarantine")
+                .is_empty(),
+            "and is no longer offered back"
+        );
+        assert!(
+            !installed.path.exists(),
+            "discarding does not put anything back into the font folder"
+        );
+    }
+
+    // A record naming something outside the quarantine is a record somebody edited. Deleting what
+    // it names would turn reclaiming space into deleting any file the person can write to.
+    #[test]
+    fn a_record_naming_a_file_outside_the_quarantine_deletes_nothing() {
+        let (_temp, installed) = installed!(temp);
+        uninstall_family(
+            &installed.repository,
+            &installed.app_data_dir,
+            PROVIDER,
+            FAMILY,
+            &[],
+            &installed.environment,
+        )
+        .expect("the removal");
+        let set_aside = installed
+            .repository
+            .quarantined_fonts()
+            .expect("the quarantine")
+            .into_iter()
+            .next()
+            .expect("one set aside");
+        let bystander = installed.app_data_dir.join("not-a-quarantined-font.ttf");
+        std::fs::write(&bystander, b"somebody else's file").expect("the bystander");
+
+        let refusal = discard_quarantined_font(
+            &installed.repository,
+            &QuarantinedFont {
+                quarantine_path: bystander.to_string_lossy().into_owned(),
+                ..set_aside
+            },
+            &installed.app_data_dir,
+        )
+        .expect_err("only files inside the quarantine may be deleted");
+
+        assert_eq!(refusal, DiscardRefusal::OutsideQuarantine);
+        assert!(bystander.exists(), "and the file is still there");
+        assert_eq!(
+            installed
+                .repository
+                .quarantined_fonts()
+                .expect("the quarantine")
+                .len(),
+            1,
+            "and the record stays"
         );
     }
 }

@@ -18,6 +18,8 @@ a bundled copy when you are offline.
   service. What is new is that the app remembers it, so a font you removed is listed as set aside
   with when it went, and Put back returns it. A font whose set-aside copy has been changed since is
   refused rather than put back, and one you have installed again by other means is left alone.
+  Set-aside fonts show what they are holding, and Delete frees that space for good. It asks first,
+  because it is the one thing in FontNest that cannot be undone.
 
 - You can install font files you already have. Import fonts in the library takes single files or a
   whole folder, and before anything is written it shows you what it found: the family and style

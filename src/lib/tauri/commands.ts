@@ -179,3 +179,8 @@ export function removeManagedFont(id: string): Promise<FontRemovalReport> {
 export function restoreManagedFont(id: string): Promise<void> {
 	return invoke<void>('restore_managed_font', { id });
 }
+
+/** Deletes a set-aside font for good, and reports the bytes that frees. */
+export function discardManagedFont(id: string): Promise<number> {
+	return invoke<number>('discard_managed_font', { id });
+}

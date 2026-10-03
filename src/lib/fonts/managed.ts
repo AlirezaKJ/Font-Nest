@@ -84,3 +84,16 @@ export function byFamily(installed: ManagedFontSummary[]): [string, ManagedFontS
 	}
 	return [...families.entries()];
 }
+
+/** A size in the units a person reads, for space they are deciding whether to reclaim. */
+export function formatBytes(bytes: number): string {
+	if (bytes <= 0) return '0 KB';
+	if (bytes < 1024) return '1 KB';
+	if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** What clearing everything set aside would free. */
+export function setAsideBytes(quarantined: QuarantinedFontSummary[]): number {
+	return quarantined.reduce((total, font) => total + font.sizeBytes, 0);
+}

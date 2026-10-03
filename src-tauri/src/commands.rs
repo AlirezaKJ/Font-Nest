@@ -603,6 +603,12 @@ pub async fn managed_font_inventory(
                 family_name: font.family_name,
                 display_name: font.display_name,
                 removed_at: font.removed_at,
+                // Measured from the file rather than remembered, so the figure describes what is
+                // on the disk now rather than what was set aside then.
+                size_bytes: std::fs::metadata(&font.quarantine_path)
+                    .ok()
+                    .and_then(|metadata| u32::try_from(metadata.len()).ok())
+                    .unwrap_or_default(),
             })
             .collect();
         Ok(ManagedFontInventory {
@@ -710,6 +716,48 @@ pub async fn restore_managed_font(
     })
     .await
     .map_err(|_| CommandError::font_restore_failed())?
+}
+
+/// Deletes a font that was set aside, for good.
+///
+/// The one thing in `FontNest` that does not keep what it takes, so it is the one the interface
+/// has to ask about before calling. What it frees is reported back, because the space is the
+/// reason anybody would.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri deserializes command arguments into owned values.
+pub async fn discard_managed_font(
+    id: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<u32, CommandError> {
+    ensure_trusted_window(&window)?;
+    app.state::<ManagedStorage>()
+        .ensure_writable()
+        .map_err(CommandError::managed_storage_recovery)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| CommandError::managed_storage_unavailable())?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = ManagedInstallationRepository::in_app_data_dir(&app_data_dir);
+        let font = repository
+            .quarantined_font(&id)
+            .map_err(|_| CommandError::managed_inventory_unavailable())?
+            .ok_or_else(CommandError::font_discard_failed)?;
+
+        managed_uninstall::discard_quarantined_font(&repository, &font, &app_data_dir)
+            .map(|freed| u32::try_from(freed).unwrap_or(u32::MAX))
+            .map_err(|refusal| {
+                log::warn!(
+                    "FontNest will not delete {name}: {refusal}",
+                    name = font.display_name
+                );
+                CommandError::font_discard_failed()
+            })
+    })
+    .await
+    .map_err(|_| CommandError::font_discard_failed())?
 }
 
 /// Reviews font files the person chose, without changing anything.

@@ -7,9 +7,11 @@ import type { QuarantinedFontSummary } from '$lib/bindings/QuarantinedFontSummar
 import {
 	EMPTY_INVENTORY,
 	byFamily,
+	formatBytes,
 	inventorySummary,
 	refusalDetail,
 	removedAgo,
+	setAsideBytes,
 	sourceLabel
 } from './managed';
 
@@ -40,14 +42,19 @@ function installed(
 	};
 }
 
-function setAside(displayName: string, removedAt: number): QuarantinedFontSummary {
+function setAside(
+	displayName: string,
+	removedAt: number,
+	sizeBytes = 42_000
+): QuarantinedFontSummary {
 	return {
 		id: `google-fonts:${displayName}`,
 		provider: 'google-fonts',
 		familyName: 'Inter',
 		displayName,
 		imported: false,
-		removedAt
+		removedAt,
+		sizeBytes
 	};
 }
 
@@ -132,5 +139,23 @@ describe('how long ago a font was removed', () => {
 	// A clock that disagrees with the record should not produce "in -4 minutes".
 	it('never counts forwards', () => {
 		expect(removedAgo(seconds + 600, now)).toBe('just now');
+	});
+});
+
+describe('naming the space set-aside fonts hold', () => {
+	it('reads sizes in units a person uses', () => {
+		expect(formatBytes(0)).toBe('0 KB');
+		expect(formatBytes(400)).toBe('1 KB');
+		expect(formatBytes(42_000)).toBe('41 KB');
+		expect(formatBytes(3_500_000)).toBe('3.3 MB');
+	});
+
+	// The space is the only reason to delete something that can still be put back, so the figure
+	// is what the decision rests on.
+	it('adds up everything waiting to be reclaimed', () => {
+		expect(
+			setAsideBytes([setAside('Inter Thin', 1, 1000), setAside('Inter Bold', 2, 2400)])
+		).toBe(3400);
+		expect(setAsideBytes([])).toBe(0);
 	});
 });

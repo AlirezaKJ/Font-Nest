@@ -10,4 +10,9 @@ export type QuarantinedFontSummary = { id: string, provider: string, familyName:
  * Typed as a number rather than left to the default: this crosses as JSON, where it is a
  * number, and a binding that said `bigint` would describe something that never arrives.
  */
-removedAt: number, };
+removedAt: number, 
+/**
+ * What the set-aside file is holding, so the space can be named before it is reclaimed.
+ * Zero when the file is no longer there to measure.
+ */
+sizeBytes: number, };

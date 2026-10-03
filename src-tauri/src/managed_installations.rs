@@ -438,6 +438,17 @@ impl ManagedInstallationRepository {
             .find(|font| font.id == id))
     }
 
+    /// Forgets a font that was set aside, after its file has been deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SQLite` error when the ledger cannot be written.
+    pub fn forget_quarantined(&self, id: &str) -> Result<(), rusqlite::Error> {
+        self.open()?
+            .execute("DELETE FROM quarantined_fonts WHERE id = ?1", params![id])
+            .map(|_| ())
+    }
+
     /// Puts a quarantined font back into the ledger as an installation, in one transaction.
     ///
     /// The row moves rather than being copied: a font cannot be both set aside and installed, and

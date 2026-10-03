@@ -155,6 +155,7 @@ pub fn run() {
             commands::managed_font_inventory,
             commands::remove_managed_font,
             commands::restore_managed_font,
+            commands::discard_managed_font,
             commands::preflight_font_import,
             commands::import_font_files,
             commands::load_preferences,
