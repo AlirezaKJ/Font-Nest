@@ -546,7 +546,7 @@
 
 	function focusSearch() {
 		requestAnimationFrame(() => {
-			document.querySelector<HTMLInputElement>('[data-font-library.search]')?.focus();
+			document.querySelector<HTMLInputElement>('[data-font-search]')?.focus();
 		});
 	}
 
