@@ -122,3 +122,34 @@ export function filterFamilies(
 export function formatValues(families: FontFamilySummary[]): string[] {
 	return [...new Set(families.flatMap((family) => family.formats))].sort();
 }
+
+/** Enough of a filter control for naming what it has been set to. */
+type FilterGroupLike = {
+	key: string;
+	value: string;
+	options: readonly { value: string; label: string }[];
+};
+
+/** The label a control is showing for its current value, or the raw value if it has none. */
+export function optionLabel(
+	options: readonly { value: string; label: string }[],
+	value: string
+): string {
+	return options.find((option) => option.value === value)?.label ?? value;
+}
+
+/**
+ * The filters currently narrowing the list, as the chips name them.
+ *
+ * The chips are the only place active choices are written out, since the control that sets them no
+ * longer shows its value. Sort is not among them: it always has a value, so a chip for it could
+ * never be dismissed.
+ */
+export function activeFiltersFrom(groups: readonly FilterGroupLike[]): ActiveLibraryFilter[] {
+	return groups
+		.filter((group) => group.value !== 'all')
+		.map((group) => ({
+			key: group.key as LibraryFilterKey,
+			label: optionLabel(group.options, group.value)
+		}));
+}

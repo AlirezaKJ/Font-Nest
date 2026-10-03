@@ -4,11 +4,13 @@ import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
 
 import {
 	NO_FILTERS,
+	activeFiltersFrom,
 	familyHaystack,
 	filterFamilies,
 	formatValues,
 	matchesFilters,
 	matchesSearch,
+	optionLabel,
 	searchTerms,
 	sortFamilies
 } from './filters';
@@ -181,5 +183,43 @@ describe('the list the library shows', () => {
 				family({ formats: ['TrueType'] })
 			])
 		).toEqual(['TrueType', 'WOFF2']);
+	});
+});
+
+describe('naming the filters that are narrowing the list', () => {
+	const groups = [
+		{
+			key: 'origin',
+			value: 'userInstalled',
+			options: [
+				{ value: 'all', label: 'Anywhere' },
+				{ value: 'userInstalled', label: 'Installed' }
+			]
+		},
+		{
+			key: 'format',
+			value: 'all',
+			options: [
+				{ value: 'all', label: 'All formats' },
+				{ value: 'WOFF2', label: 'WOFF2' }
+			]
+		}
+	];
+
+	it('names only the filters that are actually set', () => {
+		expect(activeFiltersFrom(groups)).toEqual([{ key: 'origin', label: 'Installed' }]);
+	});
+
+	it('comes back empty when nothing is filtered', () => {
+		expect(activeFiltersFrom(groups.map((group) => ({ ...group, value: 'all' })))).toEqual([]);
+	});
+
+	// The chip is the only place the choice is written out, so it has to read as the control does.
+	it('uses the label the control shows, not the value underneath', () => {
+		expect(optionLabel(groups[0].options, 'userInstalled')).toBe('Installed');
+	});
+
+	it('falls back to the value when a control has no label for it', () => {
+		expect(optionLabel(groups[0].options, 'machineInstalled')).toBe('machineInstalled');
 	});
 });

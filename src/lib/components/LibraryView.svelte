@@ -2,7 +2,8 @@
 	import { slide } from 'svelte/transition';
 	import { quintOut } from 'svelte/easing';
 
-	import type { ActiveLibraryFilter, LibraryFilterKey } from '$lib/library/filters';
+	import { type LibraryFilterKey, activeFiltersFrom, formatValues } from '$lib/library/filters';
+	import { PAGE_SIZE, type LibrarySettings } from '$lib/library/settings.svelte';
 	import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
 	import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
 	import type { ContextMenuRequest } from '$lib/context-menu/types';
@@ -13,7 +14,12 @@
 	import Icon from './Icon.svelte';
 	import RangeSlider from './RangeSlider.svelte';
 	import { contextMenu } from '$lib/context-menu/action';
-	import { familyOrigin, isSystemOnly } from '$lib/fonts/font-origin';
+	import {
+		FONT_ORIGIN_ORDER,
+		familyOrigin,
+		fontOrigin,
+		isSystemOnly
+	} from '$lib/fonts/font-origin';
 	import {
 		faceDetail,
 		faceSpecimenStyle,
@@ -26,33 +32,18 @@
 	import { weightName } from '$lib/fonts/weights';
 
 	let {
+		library,
 		catalogue,
 		catalogueMode,
 		loading,
 		errorMessage,
 		prefersReducedMotion,
 		density,
-		pageSize,
 		previewText,
 		pinnedFamilyIds,
 		selectedFamilyId,
-		filterGroups,
-		activeFilters,
 		filteredFamilies,
-		hasResettableState,
-		sortOrder,
-		sortOptions,
-		search = $bindable(),
-		specimenMode = $bindable(),
-		specimenSize = $bindable(),
-		specimenWeight = $bindable(),
-		displayLimit = $bindable(),
 		libraryScrollElement = $bindable(),
-		onClearFilter,
-		onClearFilters,
-		onResetAll,
-		onUpdateFilter,
-		onUpdateSearch,
 		onSetPreviewText,
 		onRefreshCatalogue,
 		onImport,
@@ -64,35 +55,20 @@
 		familyMenu,
 		faceMenu
 	}: {
+		/** How the library is being looked at: searched, filtered, ordered, drawn. */
+		library: LibrarySettings;
 		catalogue: FontCatalogue | null;
 		catalogueMode: string;
 		loading: boolean;
 		errorMessage: string | null;
 		prefersReducedMotion: boolean;
 		density: string;
-		pageSize: number;
 		previewText: string;
 		pinnedFamilyIds: string[];
 		selectedFamilyId: string | null;
-		filterGroups: FilterGroup[];
-		activeFilters: ActiveLibraryFilter[];
 		filteredFamilies: FontFamilySummary[];
-		hasResettableState: boolean;
-		sortOrder: string;
-		sortOptions: DiscoverFilterOption[];
-		search: string;
-		specimenMode: string;
-		specimenSize: number;
-		specimenWeight: number;
-		/** How much of the list is on screen. The route owns it so a session can restore it. */
-		displayLimit: number;
 		/** Held by the route too, which saves and restores where the list was scrolled to. */
 		libraryScrollElement: HTMLElement | undefined;
-		onClearFilter: (key: LibraryFilterKey) => void;
-		onClearFilters: () => void;
-		onResetAll: () => void;
-		onUpdateFilter: (key: LibraryFilterKey, value: string) => void;
-		onUpdateSearch: (value: string) => void;
 		onSetPreviewText: (value: string) => void;
 		onRefreshCatalogue: () => void;
 		onImport: () => void;
@@ -110,6 +86,63 @@
 
 	/** How many faces a family lists before it stops and says how many more there are. */
 	const MAX_DETAIL_FACES = 12;
+	const SPACING_OPTIONS: DiscoverFilterOption[] = [
+		{ value: 'all', label: 'Any spacing' },
+		{ value: 'proportional', label: 'Proportional' },
+		{ value: 'monospaced', label: 'Monospaced' }
+	];
+
+	const TECHNOLOGY_OPTIONS: DiscoverFilterOption[] = [
+		{ value: 'all', label: 'Any technology' },
+		{
+			value: 'variable',
+			label: 'Variable',
+			description: 'One file covers a range of weights or widths'
+		},
+		{ value: 'static', label: 'Static', description: 'One file per style' }
+	];
+
+	const STATUS_OPTIONS: DiscoverFilterOption[] = [
+		{ value: 'all', label: 'Any status' },
+		{ value: 'conflict', label: 'Conflicts only', description: 'Families with duplicate files' }
+	];
+
+	let originOptions = $derived.by<DiscoverFilterOption[]>(() => {
+		const present = new Set(catalogue?.families.flatMap((family) => family.origins) ?? []);
+		return [
+			{ value: 'all', label: 'Anywhere' },
+			...FONT_ORIGIN_ORDER.filter((origin) => present.has(origin)).map((origin) => ({
+				value: origin,
+				label: fontOrigin(origin).label,
+				description: fontOrigin(origin).description
+			}))
+		];
+	});
+
+	let formatOptions = $derived.by<DiscoverFilterOption[]>(() => [
+		{ value: 'all', label: 'All formats' },
+		...formatValues(catalogue?.families ?? []).map((value) => ({ value, label: value }))
+	]);
+
+	let filterGroups = $derived.by<FilterGroup[]>(() => [
+		{ key: 'origin', label: 'Origin', value: library.origin, options: originOptions },
+		{ key: 'format', label: 'Format', value: library.format, options: formatOptions },
+		{
+			key: 'technology',
+			label: 'Technology',
+			value: library.technology,
+			options: TECHNOLOGY_OPTIONS
+		},
+		{ key: 'spacing', label: 'Spacing', value: library.spacing, options: SPACING_OPTIONS },
+		{ key: 'status', label: 'Status', value: library.status, options: STATUS_OPTIONS }
+	]);
+
+	const SORT_OPTIONS: DiscoverFilterOption[] = [
+		{ value: 'name-asc', label: 'Name A–Z' },
+		{ value: 'name-desc', label: 'Name Z–A' },
+		{ value: 'styles', label: 'Most styles' },
+		{ value: 'faces', label: 'Most files' }
+	];
 	const SKELETON_ROWS = [0, 1, 2, 3];
 	const WEIGHT_NOTE_LINGER_MS = 2600;
 
@@ -120,18 +153,23 @@
 	let weightNotesVisible = $state(false);
 	let weightNoteTimer: ReturnType<typeof setTimeout> | undefined;
 
-	let renderedFamilies = $derived(filteredFamilies.slice(0, displayLimit));
+	let activeFilters = $derived(activeFiltersFrom(filterGroups));
+	let renderedFamilies = $derived(filteredFamilies.slice(0, library.displayLimit));
 
 	function familyPreviewStyle(family: FontFamilySummary): string {
-		return familyPreviewStyleFor(family, specimenWeight);
+		return familyPreviewStyleFor(family, library.specimenWeight);
 	}
 
 	function substituteWeightNote(family: FontFamilySummary): string | null {
-		return substituteWeightNoteFor(family, specimenWeight);
+		return substituteWeightNoteFor(family, library.specimenWeight);
 	}
 
 	function specimenText(family: FontFamilySummary): string {
-		return specimenTextFor(family, specimenMode === 'names' ? 'names' : 'custom', previewText);
+		return specimenTextFor(
+			family,
+			library.specimenMode === 'names' ? 'names' : 'custom',
+			previewText
+		);
 	}
 
 	/**
@@ -230,26 +268,26 @@
 				<span class="sr-only">Search</span>
 				<Icon name="search" size={15} />
 				<input
-					data-font-search
+					data-font-library.search
 					type="search"
 					placeholder="Families, styles, origins"
-					value={search}
-					oninput={(event) => onUpdateSearch(event.currentTarget.value)}
+					value={library.search}
+					oninput={(event) => library.setSearch(event.currentTarget.value)}
 				/>
 			</label>
 			<div class="filter-strip">
 				<FilterPopover
 					id="library-filters"
 					groups={filterGroups}
-					onChange={(key, value) => onUpdateFilter(key as LibraryFilterKey, value)}
-					onClear={onClearFilters}
+					onChange={(key, value) => library.setFilter(key as LibraryFilterKey, value)}
+					onClear={() => library.clearFilters()}
 				/>
 				<DiscoverFilterMenu
 					id="library-sort"
 					label="Sort"
-					value={sortOrder}
-					options={sortOptions}
-					onChange={(value) => onUpdateFilter('sort', value)}
+					value={library.sortOrder}
+					options={SORT_OPTIONS}
+					onChange={(value) => library.setFilter('sort', value)}
 				/>
 				<div
 					class:empty={activeFilters.length === 0}
@@ -260,7 +298,7 @@
 						<button
 							type="button"
 							aria-label={`Remove ${filter.label} filter`}
-							onclick={() => onClearFilter(filter.key)}
+							onclick={() => library.clearFilter(filter.key)}
 						>
 							{filter.label}<Icon name="close" size={12} />
 						</button>
@@ -269,8 +307,8 @@
 				<button
 					type="button"
 					class="reset-action"
-					disabled={!hasResettableState}
-					onclick={onResetAll}>Reset all</button
+					disabled={!library.isDirty}
+					onclick={() => library.reset()}>Reset all</button
 				>
 			</div>
 		</div>
@@ -283,51 +321,51 @@
 					type="text"
 					value={previewText}
 					placeholder="Type a shared specimen"
-					disabled={specimenMode === 'names'}
+					disabled={library.specimenMode === 'names'}
 					oninput={(event) => onSetPreviewText(event.currentTarget.value)}
 				/>
 			</label>
 			<div class="specimen-modes" role="group" aria-label="Specimen text mode">
 				<button
 					type="button"
-					class:active={specimenMode === 'names'}
-					aria-pressed={specimenMode === 'names'}
-					onclick={() => (specimenMode = 'names')}>Names</button
+					class:active={library.specimenMode === 'names'}
+					aria-pressed={library.specimenMode === 'names'}
+					onclick={() => (library.specimenMode = 'names')}>Names</button
 				>
 				<button
 					type="button"
-					class:active={specimenMode === 'custom'}
-					aria-pressed={specimenMode === 'custom'}
-					onclick={() => (specimenMode = 'custom')}>Your text</button
+					class:active={library.specimenMode === 'custom'}
+					aria-pressed={library.specimenMode === 'custom'}
+					onclick={() => (library.specimenMode = 'custom')}>Your text</button
 				>
 			</div>
 			<RangeSlider
 				label="Size"
-				value={specimenSize}
+				value={library.specimenSize}
 				min={48}
 				max={148}
 				step={4}
-				display={`${specimenSize}px`}
-				onChange={(value) => (specimenSize = value)}
+				display={`${library.specimenSize}px`}
+				onChange={(value) => (library.specimenSize = value)}
 			/>
 			<RangeSlider
 				label="Weight"
-				value={specimenWeight}
+				value={library.specimenWeight}
 				min={100}
 				max={900}
 				step={100}
-				display={weightName(specimenWeight)}
-				valueText={`${weightName(specimenWeight)} ${specimenWeight}`}
+				display={weightName(library.specimenWeight)}
+				valueText={`${weightName(library.specimenWeight)} ${library.specimenWeight}`}
 				valueWidth="68px"
 				onChange={(value) => {
-					specimenWeight = value;
+					library.specimenWeight = value;
 					showWeightNotes();
 				}}
 			/>
 		</div>
 	</section>
 
-	<div class="specimen-feed" style={`--specimen-size: ${specimenSize}px`}>
+	<div class="specimen-feed" style={`--specimen-size: ${library.specimenSize}px`}>
 		<div class="catalogue-heading">
 			<strong>{filteredFamilies.length.toLocaleString()} families</strong>
 			<span>Rendered in the fonts installed on this computer</span>
@@ -364,13 +402,13 @@
 			<div class="catalogue-state">
 				<div class="state-icon"><Icon name="search" size={20} /></div>
 				<h2>No families match</h2>
-				<p>Try a shorter search, or remove one of the active filters.</p>
+				<p>Try a shorter library.search, or remove one of the active filters.</p>
 				<button
 					type="button"
 					onclick={() => {
-						search = '';
-						onClearFilters();
-					}}>Clear search and filters</button
+						library.setSearch('');
+						library.clearFilters();
+					}}>Clear library.search and filters</button
 				>
 			</div>
 		{:else}
@@ -537,8 +575,8 @@
 
 			{#if renderedFamilies.length < filteredFamilies.length}
 				<div class="load-more-row">
-					<button type="button" onclick={() => (displayLimit += pageSize)}>
-						{Math.min(pageSize, filteredFamilies.length - renderedFamilies.length)} more
+					<button type="button" onclick={() => library.showMore(filteredFamilies.length)}>
+						{Math.min(PAGE_SIZE, filteredFamilies.length - renderedFamilies.length)} more
 					</button>
 					<span
 						>{renderedFamilies.length.toLocaleString()} of {filteredFamilies.length.toLocaleString()}</span

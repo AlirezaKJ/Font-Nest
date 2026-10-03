@@ -18,8 +18,6 @@
 	import DiscoverView from '$lib/components/DiscoverView.svelte';
 	import FontPreviewView from '$lib/components/FontPreviewView.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import type { DiscoverFilterOption } from '$lib/components/DiscoverFilterMenu.svelte';
-	import type { FilterGroup } from '$lib/components/FilterPopover.svelte';
 	import LibraryView from '$lib/components/LibraryView.svelte';
 	import PatchNotesView from '$lib/components/PatchNotesView.svelte';
 	import SettingsView, {
@@ -29,16 +27,10 @@
 	import { createBrowserCatalogue } from '$lib/catalogue/browser-catalogue';
 	import { writeClipboardText } from '$lib/context-menu/clipboard';
 	import { faceContextMenu, familyContextMenu } from '$lib/context-menu/entries';
-	import { FONT_ORIGIN_ORDER, fontOrigin } from '$lib/fonts/font-origin';
 	import { importReviewed, reviewChosenFonts } from '$lib/fonts/import';
 	import { nearestWeight } from '$lib/fonts/weights';
-	import {
-		type ActiveLibraryFilter,
-		type LibraryFilterKey,
-		type LibrarySortOrder,
-		filterFamilies,
-		formatValues
-	} from '$lib/library/filters';
+	import { type LibrarySortOrder, filterFamilies } from '$lib/library/filters';
+	import { LibrarySettings } from '$lib/library/settings.svelte';
 	import { EMPTY_INVENTORY, formatBytes, refusalDetail } from '$lib/fonts/managed';
 	import { importLocalFontPreview, releaseLocalFontPreview } from '$lib/fonts/local-fonts';
 	import { hasUnseenRelease } from '$lib/release-notes/loader';
@@ -59,43 +51,14 @@
 	} from '$lib/tauri/commands';
 	import { fontFaceFilePath, revealFontFaceFile, scanInstalledFonts } from '$lib/tauri/commands';
 
-	const PAGE_SIZE = 120;
 	const DEFAULT_PREVIEW = 'What is life but a fevered dream';
-	const DEFAULT_SPECIMEN_SIZE = 96;
-	const DEFAULT_SPECIMEN_WEIGHT = 400;
 	const UPDATE_CHECK_DELAY_MS = 8_000;
 	const PREFERENCES_SAVE_DELAY_MS = 400;
 	// Saved family IDs from before opaque IDs shipped can never match a family again, so they are
 	// dropped on load rather than carried forever in the preference blob.
 	const FAMILY_ID_PATTERN = /^family:[0-9a-f]{32}$/;
 
-	const SPACING_OPTIONS: DiscoverFilterOption[] = [
-		{ value: 'all', label: 'Any spacing' },
-		{ value: 'proportional', label: 'Proportional' },
-		{ value: 'monospaced', label: 'Monospaced' }
-	];
-	const TECHNOLOGY_OPTIONS: DiscoverFilterOption[] = [
-		{ value: 'all', label: 'Any technology' },
-		{
-			value: 'variable',
-			label: 'Variable',
-			description: 'One file covers a range of weights or widths'
-		},
-		{ value: 'static', label: 'Static', description: 'One file per style' }
-	];
-	const STATUS_OPTIONS: DiscoverFilterOption[] = [
-		{ value: 'all', label: 'Any status' },
-		{ value: 'conflict', label: 'Conflicts only', description: 'Families with duplicate files' }
-	];
-	const SORT_OPTIONS: DiscoverFilterOption[] = [
-		{ value: 'name-asc', label: 'Name A–Z' },
-		{ value: 'name-desc', label: 'Name Z–A' },
-		{ value: 'styles', label: 'Most styles' },
-		{ value: 'faces', label: 'Most faces' }
-	];
-
 	type CatalogueMode = 'native' | 'browser';
-	type SpecimenMode = 'names' | 'custom';
 	type Toast = { message: string; tone: 'success' | 'error' };
 
 	let view = $state<AppView>('library');
@@ -118,19 +81,15 @@
 		void [
 			view,
 			selectedFamilyId,
-			search,
-			originFilter,
-			formatFilter,
-			technologyFilter,
-			spacingFilter,
-			statusFilter,
-			sortOrder,
-			specimenMode,
-			specimenSize,
-			specimenWeight,
+			library.search,
+			library.filters,
+			library.sortOrder,
+			library.specimenMode,
+			library.specimenSize,
+			library.specimenWeight,
 			previewSize,
 			previewWeight,
-			displayLimit
+			library.displayLimit
 		];
 		// Until the stored session has been applied, the values above are still defaults and
 		// writing them would throw away what the last session left.
@@ -161,9 +120,7 @@
 		pendingSession = null;
 
 		selectedFamilyId = session.selectedFamilyId ?? null;
-		if (session.displayLimit !== undefined) {
-			displayLimit = Math.max(displayLimit, session.displayLimit);
-		}
+		if (session.displayLimit !== undefined) library.showAtLeast(session.displayLimit);
 		if (session.view) view = session.view;
 
 		const scrollTop = session.scrollTop ?? 0;
@@ -187,17 +144,8 @@
 	let loading = $state(true);
 	let errorMessage = $state('');
 	let selectedFamilyId = $state<string | null>(null);
-	let search = $state('');
-	let originFilter = $state('all');
-	let formatFilter = $state('all');
-	let technologyFilter = $state('all');
-	let spacingFilter = $state('all');
-	let statusFilter = $state('all');
-	let sortOrder = $state('name-asc');
-	let specimenMode = $state<SpecimenMode>('names');
-	let specimenSize = $state(DEFAULT_SPECIMEN_SIZE);
-	let specimenWeight = $state(DEFAULT_SPECIMEN_WEIGHT);
-	let displayLimit = $state(PAGE_SIZE);
+	// How the library is being looked at. The route keeps it only because it persists it.
+	const library = new LibrarySettings();
 	let previewText = $state(DEFAULT_PREVIEW);
 	let previewSize = $state(64);
 	let previewWeight = $state(400);
@@ -227,68 +175,18 @@
 	let pendingSession = $state<Partial<Session> | null>(null);
 	let libraryScrollElement = $state<HTMLElement>();
 
-	let originOptions = $derived.by<DiscoverFilterOption[]>(() => {
-		const present = new Set(catalogue?.families.flatMap((family) => family.origins) ?? []);
-		return [
-			{ value: 'all', label: 'Anywhere' },
-			...FONT_ORIGIN_ORDER.filter((origin) => present.has(origin)).map((origin) => ({
-				value: origin,
-				label: fontOrigin(origin).label,
-				description: fontOrigin(origin).description
-			}))
-		];
-	});
-
-	let formatOptions = $derived.by<DiscoverFilterOption[]>(() => [
-		{ value: 'all', label: 'All formats' },
-		...formatValues(catalogue?.families ?? []).map((value) => ({ value, label: value }))
-	]);
-
-	let filterGroups = $derived.by<FilterGroup[]>(() => [
-		{ key: 'origin', label: 'Origin', value: originFilter, options: originOptions },
-		{ key: 'format', label: 'Format', value: formatFilter, options: formatOptions },
-		{
-			key: 'technology',
-			label: 'Technology',
-			value: technologyFilter,
-			options: TECHNOLOGY_OPTIONS
-		},
-		{ key: 'spacing', label: 'Spacing', value: spacingFilter, options: SPACING_OPTIONS },
-		{ key: 'status', label: 'Status', value: statusFilter, options: STATUS_OPTIONS }
-	]);
-
-	// The trigger no longer shows each filter's value, so these chips are the only place
-	// active choices are named. Sort stays out of them: it always has a visible value.
-	let activeFilters = $derived.by<ActiveLibraryFilter[]>(() =>
-		filterGroups
-			.filter((group) => group.value !== 'all')
-			.map((group) => ({
-				key: group.key as LibraryFilterKey,
-				label: optionLabel(group.options, group.value)
-			}))
-	);
-
-	let hasResettableState = $derived(
-		Boolean(search) ||
-			activeFilters.length > 0 ||
-			sortOrder !== 'name-asc' ||
-			specimenMode !== 'names' ||
-			specimenSize !== DEFAULT_SPECIMEN_SIZE ||
-			specimenWeight !== DEFAULT_SPECIMEN_WEIGHT
-	);
-
 	let filteredFamilies = $derived(
 		filterFamilies(
 			catalogue?.families ?? [],
-			search,
+			library.search,
 			{
-				origin: originFilter,
-				format: formatFilter,
-				technology: technologyFilter,
-				spacing: spacingFilter,
-				status: statusFilter
+				origin: library.origin,
+				format: library.format,
+				technology: library.technology,
+				spacing: library.spacing,
+				status: library.status
 			},
-			sortOrder as LibrarySortOrder
+			library.sortOrder as LibrarySortOrder
 		)
 	);
 
@@ -333,9 +231,8 @@
 				event.preventDefault();
 				view = 'library';
 				focusSearch();
-			} else if (event.key === 'Escape' && search) {
-				search = '';
-				displayLimit = PAGE_SIZE;
+			} else if (event.key === 'Escape' && library.search) {
+				library.setSearch('');
 				focusSearch();
 			}
 		};
@@ -396,20 +293,7 @@
 		];
 
 		pendingSession = parseSession(saved.session);
-		if (pendingSession.search !== undefined) search = pendingSession.search;
-		if (pendingSession.filters) {
-			originFilter = pendingSession.filters.origin;
-			formatFilter = pendingSession.filters.format;
-			technologyFilter = pendingSession.filters.technology;
-			spacingFilter = pendingSession.filters.spacing;
-			statusFilter = pendingSession.filters.status;
-		}
-		if (pendingSession.sortOrder) sortOrder = pendingSession.sortOrder;
-		if (pendingSession.specimenMode) specimenMode = pendingSession.specimenMode;
-		if (pendingSession.specimenSize !== undefined) specimenSize = pendingSession.specimenSize;
-		if (pendingSession.specimenWeight !== undefined) {
-			specimenWeight = pendingSession.specimenWeight;
-		}
+		library.apply(pendingSession);
 		if (pendingSession.previewSize !== undefined) previewSize = pendingSession.previewSize;
 		if (pendingSession.previewWeight !== undefined) {
 			previewWeight = pendingSession.previewWeight;
@@ -441,21 +325,15 @@
 				session: {
 					view: restorableView(view),
 					selectedFamilyId,
-					search,
-					filters: {
-						origin: originFilter,
-						format: formatFilter,
-						technology: technologyFilter,
-						spacing: spacingFilter,
-						status: statusFilter
-					},
-					sortOrder: restorableSortOrder(sortOrder),
-					specimenMode,
-					specimenSize,
-					specimenWeight,
+					search: library.search,
+					filters: library.filters,
+					sortOrder: restorableSortOrder(library.sortOrder),
+					specimenMode: library.specimenMode,
+					specimenSize: library.specimenSize,
+					specimenWeight: library.specimenWeight,
 					previewSize,
 					previewWeight,
-					displayLimit,
+					displayLimit: library.displayLimit,
 					scrollTop: libraryScrollElement?.scrollTop ?? 0
 				} satisfies Session
 			})
@@ -661,56 +539,15 @@
 		view = getConflictDestination('inspect');
 	}
 
-	function updateSearch(value: string) {
-		search = value;
-		displayLimit = PAGE_SIZE;
-	}
-
 	function updateGlobalSearch(value: string) {
 		view = 'library';
-		updateSearch(value);
+		library.setSearch(value);
 	}
 
 	function focusSearch() {
 		requestAnimationFrame(() => {
-			document.querySelector<HTMLInputElement>('[data-font-search]')?.focus();
+			document.querySelector<HTMLInputElement>('[data-font-library.search]')?.focus();
 		});
-	}
-
-	function updateFilter(key: LibraryFilterKey, value: string) {
-		if (key === 'origin') originFilter = value;
-		if (key === 'format') formatFilter = value;
-		if (key === 'technology') technologyFilter = value;
-		if (key === 'spacing') spacingFilter = value;
-		if (key === 'status') statusFilter = value;
-		if (key === 'sort') sortOrder = value;
-		displayLimit = PAGE_SIZE;
-	}
-
-	function clearFilter(key: LibraryFilterKey) {
-		updateFilter(key, key === 'sort' ? 'name-asc' : 'all');
-	}
-
-	function clearFilters() {
-		originFilter = 'all';
-		formatFilter = 'all';
-		technologyFilter = 'all';
-		spacingFilter = 'all';
-		statusFilter = 'all';
-		displayLimit = PAGE_SIZE;
-	}
-
-	function resetAll() {
-		search = '';
-		clearFilters();
-		sortOrder = 'name-asc';
-		specimenMode = 'names';
-		specimenSize = DEFAULT_SPECIMEN_SIZE;
-		specimenWeight = DEFAULT_SPECIMEN_WEIGHT;
-	}
-
-	function optionLabel(options: DiscoverFilterOption[], value: string): string {
-		return options.find((option) => option.value === value)?.label ?? value;
 	}
 
 	function toggleFamily(familyId: string) {
@@ -884,7 +721,7 @@
 			onReviewConflict: () => reviewConflict(family.id),
 			onUseAsPreviewText: () => {
 				setPreviewText(family.name);
-				specimenMode = 'custom';
+				library.specimenMode = 'custom';
 				showToast('Preview text updated.', 'success');
 			},
 			onRevealFile: () => firstFaceId && void revealFaceFile(firstFaceId),
@@ -924,7 +761,7 @@
 <a class="skip-link" href="#main-content">Skip to font catalogue</a>
 
 <AppTitleBar
-	{search}
+	search={library.search}
 	{loading}
 	{theme}
 	settingsActive={view === 'settings'}
@@ -963,33 +800,18 @@
 	<main id="main-content">
 		{#if view === 'library'}
 			<LibraryView
+				{library}
 				{catalogue}
 				{catalogueMode}
 				{loading}
 				{errorMessage}
 				{prefersReducedMotion}
 				{density}
-				pageSize={PAGE_SIZE}
 				{previewText}
 				{pinnedFamilyIds}
 				{selectedFamilyId}
-				{filterGroups}
-				{activeFilters}
 				{filteredFamilies}
-				{hasResettableState}
-				{sortOrder}
-				sortOptions={SORT_OPTIONS}
-				bind:search
-				bind:specimenMode
-				bind:specimenSize
-				bind:specimenWeight
-				bind:displayLimit
 				bind:libraryScrollElement
-				onClearFilter={clearFilter}
-				onClearFilters={clearFilters}
-				onResetAll={resetAll}
-				onUpdateFilter={updateFilter}
-				onUpdateSearch={updateSearch}
 				onSetPreviewText={setPreviewText}
 				onRefreshCatalogue={refreshCatalogue}
 				onImport={openImportPicker}

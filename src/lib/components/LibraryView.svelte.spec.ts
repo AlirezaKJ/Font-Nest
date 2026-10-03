@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { FontCatalogue } from '$lib/bindings/FontCatalogue';
 import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
 import { NO_FILTERS, filterFamilies } from '$lib/library/filters';
+import { LibrarySettings } from '$lib/library/settings.svelte';
 
 import LibraryView from './LibraryView.svelte';
 
@@ -44,7 +45,10 @@ function catalogue(families: FontFamilySummary[]): FontCatalogue {
 
 const FAMILIES = [family('Cardo'), family('Inter'), family('Roboto Mono', { monospaced: true })];
 
-function mount(overrides: Partial<ComponentProps<typeof LibraryView>> = {}) {
+function mount(
+	overrides: Partial<ComponentProps<typeof LibraryView>> = {},
+	settings: LibrarySettings = new LibrarySettings()
+) {
 	const spies = {
 		onClearFilter: vi.fn(),
 		onClearFilters: vi.fn(),
@@ -61,34 +65,24 @@ function mount(overrides: Partial<ComponentProps<typeof LibraryView>> = {}) {
 		onReviewConflict: vi.fn()
 	};
 	const result = render(LibraryView, {
+		library: settings,
 		catalogue: catalogue(FAMILIES),
 		catalogueMode: 'native',
 		loading: false,
 		errorMessage: null,
 		prefersReducedMotion: true,
 		density: 'comfortable',
-		pageSize: 120,
 		previewText: '',
 		pinnedFamilyIds: [],
 		selectedFamilyId: null,
-		filterGroups: [],
-		activeFilters: [],
 		filteredFamilies: filterFamilies(FAMILIES, '', NO_FILTERS, 'name-asc'),
-		hasResettableState: false,
-		sortOrder: 'name-asc',
-		sortOptions: [{ value: 'name-asc', label: 'Name A–Z' }],
-		search: '',
-		specimenMode: 'names',
-		specimenSize: 96,
-		specimenWeight: 400,
-		displayLimit: 120,
 		libraryScrollElement: undefined,
 		familyMenu: () => ({ entries: [] }),
 		faceMenu: () => ({ entries: [] }),
 		...spies,
 		...overrides
 	});
-	return { ...spies, container: result.container };
+	return { ...spies, container: result.container, settings };
 }
 
 describe('the library view', () => {
@@ -129,7 +123,9 @@ describe('the library view', () => {
 
 	// A search that matches nothing is not the same as owning no fonts.
 	it('says when a search has hidden everything, rather than looking empty', () => {
-		mount({ search: 'nothing-matches-this', filteredFamilies: [] });
+		const searched = new LibrarySettings();
+		searched.setSearch('nothing-matches-this');
+		mount({ filteredFamilies: [] }, searched);
 
 		expect(screen.getByRole('heading', { name: 'No families match' })).toBeDefined();
 	});
@@ -138,11 +134,9 @@ describe('the library view', () => {
 		const many = Array.from({ length: 30 }, (_, index) =>
 			family(`Family ${String(index).padStart(2, '0')}`)
 		);
-		mount({
-			catalogue: catalogue(many),
-			filteredFamilies: many,
-			displayLimit: 10
-		});
+		const limited = new LibrarySettings();
+		limited.displayLimit = 10;
+		mount({ catalogue: catalogue(many), filteredFamilies: many }, limited);
 
 		expect(screen.getAllByRole('button', { name: /^Family \d\d/ })).toHaveLength(10);
 		// The row that offers the rest has to say how many are left, or the list looks truncated.
