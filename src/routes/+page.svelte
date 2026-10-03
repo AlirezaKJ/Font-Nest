@@ -8,7 +8,6 @@
 	import type { FontFamilySummary } from '$lib/bindings/FontFamilySummary';
 	import type { ImportOutcome } from '$lib/bindings/ImportOutcome';
 	import type { ImportPlan } from '$lib/bindings/ImportPlan';
-	import type { FontOrigin } from '$lib/bindings/FontOrigin';
 	import type { ValidatedLocalFont } from '$lib/bindings/ValidatedLocalFont';
 	import { checkForUpdates } from '$lib/app-updater';
 	import { getConflictDestination } from '$lib/conflict-navigation';
@@ -43,6 +42,15 @@
 	} from '$lib/fonts/font-origin';
 	import { importReviewed, reviewChosenFonts } from '$lib/fonts/import';
 	import { nearestWeight, weightName } from '$lib/fonts/weights';
+	import { type LibrarySortOrder, filterFamilies, formatValues } from '$lib/library/filters';
+	import {
+		faceDetail,
+		faceSpecimenStyle,
+		familyPreviewStyle as familyPreviewStyleFor,
+		specimenText as specimenTextFor,
+		substituteWeightNote as substituteWeightNoteFor,
+		weightRange
+	} from '$lib/library/specimen';
 	import { EMPTY_INVENTORY, formatBytes, refusalDetail } from '$lib/fonts/managed';
 	import { importLocalFontPreview, releaseLocalFontPreview } from '$lib/fonts/local-fonts';
 	import { hasUnseenRelease } from '$lib/release-notes/loader';
@@ -257,15 +265,10 @@
 		];
 	});
 
-	let formatOptions = $derived.by<DiscoverFilterOption[]>(() => {
-		const values = [
-			...new Set(catalogue?.families.flatMap((family) => family.formats) ?? [])
-		].sort();
-		return [
-			{ value: 'all', label: 'All formats' },
-			...values.map((value) => ({ value, label: value }))
-		];
-	});
+	let formatOptions = $derived.by<DiscoverFilterOption[]>(() => [
+		{ value: 'all', label: 'All formats' },
+		...formatValues(catalogue?.families ?? []).map((value) => ({ value, label: value }))
+	]);
 
 	let filterGroups = $derived.by<FilterGroup[]>(() => [
 		{ key: 'origin', label: 'Origin', value: originFilter, options: originOptions },
@@ -300,44 +303,20 @@
 			specimenWeight !== DEFAULT_SPECIMEN_WEIGHT
 	);
 
-	let filteredFamilies = $derived.by(() => {
-		const terms = search
-			.toLocaleLowerCase()
-			.split(/\s+/)
-			.map((term) => term.trim())
-			.filter(Boolean);
-
-		const matching = (catalogue?.families ?? []).filter((family) => {
-			const searchable = [
-				family.name,
-				...family.styles,
-				...family.origins.map((origin) => fontOrigin(origin).label),
-				...family.formats,
-				family.variable ? 'Variable' : 'Static'
-			]
-				.join(' ')
-				.toLocaleLowerCase();
-			return (
-				terms.every((term) => searchable.includes(term)) &&
-				(originFilter === 'all' || family.origins.includes(originFilter as FontOrigin)) &&
-				(formatFilter === 'all' || family.formats.includes(formatFilter)) &&
-				(technologyFilter === 'all' ||
-					family.variable === (technologyFilter === 'variable')) &&
-				(spacingFilter === 'all' ||
-					family.monospaced === (spacingFilter === 'monospaced')) &&
-				(statusFilter === 'all' || family.hasConflict)
-			);
-		});
-
-		return matching.sort((left, right) => {
-			if (sortOrder === 'name-desc') return right.name.localeCompare(left.name);
-			if (sortOrder === 'styles')
-				return right.faceCount - left.faceCount || left.name.localeCompare(right.name);
-			if (sortOrder === 'faces')
-				return right.fileCount - left.fileCount || left.name.localeCompare(right.name);
-			return left.name.localeCompare(right.name);
-		});
-	});
+	let filteredFamilies = $derived(
+		filterFamilies(
+			catalogue?.families ?? [],
+			search,
+			{
+				origin: originFilter,
+				format: formatFilter,
+				technology: technologyFilter,
+				spacing: spacingFilter,
+				status: statusFilter
+			},
+			sortOrder as LibrarySortOrder
+		)
+	);
 
 	let renderedFamilies = $derived(filteredFamilies.slice(0, displayLimit));
 	let selectedFamily = $derived.by(() => {
@@ -633,6 +612,18 @@
 		return 'FontNest could not read the installed font catalogue. Try scanning again.';
 	}
 
+	function familyPreviewStyle(family: FontFamilySummary): string {
+		return familyPreviewStyleFor(family, specimenWeight);
+	}
+
+	function substituteWeightNote(family: FontFamilySummary): string | null {
+		return substituteWeightNoteFor(family, specimenWeight);
+	}
+
+	function specimenText(family: FontFamilySummary): string {
+		return specimenTextFor(family, specimenMode as SpecimenMode, previewText);
+	}
+
 	function selectFamily(familyId: string) {
 		selectedFamilyId = familyId;
 		const family = catalogue?.families.find((candidate) => candidate.id === familyId);
@@ -793,31 +784,6 @@
 		selectFamily(familyId);
 	}
 
-	function safeFontStack(name: string): string {
-		return `"${name.replace(/["\\;\n\r]/g, '')}", system-ui, sans-serif`;
-	}
-
-	// A variable family covers a continuous range from one file, and the weights the
-	// catalogue lists for it are only the named instances it ships (often just 400).
-	// Snapping to those would pin the whole slider to one weight, so the requested weight
-	// goes straight through and the font's own wght axis clamps it.
-	function drawnWeight(family: FontFamilySummary): number {
-		return family.variable ? specimenWeight : nearestWeight(family.weights, specimenWeight);
-	}
-
-	function familyPreviewStyle(family: FontFamilySummary): string {
-		return `font-family: ${safeFontStack(family.name)}; font-weight: ${drawnWeight(family)};`;
-	}
-
-	/**
-	 * Names the weight a family is actually drawn at when it owns no style at the weight the
-	 * slider asks for, so a row that cannot follow the slider says why rather than looking stuck.
-	 */
-	function substituteWeightNote(family: FontFamilySummary): string | null {
-		const drawn = drawnWeight(family);
-		return drawn === specimenWeight ? null : `Closest cut: ${weightName(drawn)}`;
-	}
-
 	/**
 	 * The note answers a question the user just asked by moving the slider, so it shows itself
 	 * then gets out of the way rather than sitting on every row that cannot follow the weight.
@@ -826,38 +792,6 @@
 		weightNotesVisible = true;
 		if (weightNoteTimer) clearTimeout(weightNoteTimer);
 		weightNoteTimer = setTimeout(() => (weightNotesVisible = false), WEIGHT_NOTE_LINGER_MS);
-	}
-
-	function faceSpecimenStyle(family: FontFamilySummary, weight: number, style: string): string {
-		return `font-family: ${safeFontStack(family.name)}; font-weight: ${weight}; font-style: ${style === 'italic' ? 'italic' : 'normal'};`;
-	}
-
-	function specimenText(family: FontFamilySummary): string {
-		return specimenMode === 'names' ? family.name : previewText.trim() || family.name;
-	}
-
-	/**
-	 * The collapsed row already names origin, formats, style count, spacing, and technology,
-	 * so the open panel says only what the row cannot: how far the family's weights reach.
-	 */
-	function weightRange(family: FontFamilySummary): string | null {
-		if (!family.weights.length) return null;
-		const lowest = Math.min(...family.weights);
-		const highest = Math.max(...family.weights);
-		if (family.variable) return `Weights ${lowest}–${highest} (variable)`;
-		return lowest === highest
-			? `Weight ${weightName(lowest)} ${lowest}`
-			: `Weights ${lowest}–${highest}`;
-	}
-
-	function faceDetail(
-		family: FontFamilySummary,
-		face: FontFamilySummary['faces'][number]
-	): string {
-		const parts = [face.fileName];
-		if (family.origins.length > 1) parts.push(fontOrigin(face.origin).label);
-		if (face.variable) parts.push('Variable');
-		return parts.join(' · ');
 	}
 
 	// Local font files reach the web view only after the Rust boundary validates them.
