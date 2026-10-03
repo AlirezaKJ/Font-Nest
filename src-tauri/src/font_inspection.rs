@@ -840,8 +840,8 @@ fn format_codepoint(codepoint: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CancelToken, MAX_GLYPH_ENTRIES, MAX_UNICODE_MAPPINGS, codepoint_ranges, export_face_json,
-        inspect_face, inspect_glyph_outline, table_directory,
+        CancelToken, MAX_GLYPH_ENTRIES, MAX_UNICODE_MAPPINGS, PARSER_VERSION, codepoint_ranges,
+        export_face_json, inspect_face, inspect_glyph_outline, table_directory,
     };
 
     #[test]
@@ -958,6 +958,24 @@ mod tests {
         assert_eq!(
             snapshot["limits"]["glyphs"]["included"].as_u64(),
             Some(u64::from(exported.glyphs.included))
+        );
+    }
+
+    // The parser version is reported to whoever is inspecting a font and written into every
+    // snapshot, which makes it a claim about how the numbers were produced. It is a constant, so a
+    // dependency bump would leave it quietly describing a parser that is no longer doing the work.
+    #[test]
+    fn the_reported_parser_version_is_the_one_doing_the_parsing() {
+        let manifest = include_str!("../Cargo.toml");
+        let declared = manifest
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("ttf-parser = "))
+            .map(|value| value.trim().trim_matches('"'))
+            .expect("the manifest declares the parser");
+
+        assert_eq!(
+            PARSER_VERSION, declared,
+            "FontNest reports {PARSER_VERSION} but builds against {declared}"
         );
     }
 }
