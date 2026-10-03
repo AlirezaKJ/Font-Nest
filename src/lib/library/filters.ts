@@ -13,6 +13,12 @@ import { fontOrigin } from '$lib/fonts/font-origin';
 
 export type LibrarySortOrder = 'name-asc' | 'name-desc' | 'styles' | 'faces';
 
+/** Which control a filter chip stands for, so dismissing the chip clears the right one. */
+export type LibraryFilterKey = 'origin' | 'format' | 'technology' | 'spacing' | 'status' | 'sort';
+
+/** A filter currently narrowing the list, named the way its chip shows it. */
+export type ActiveLibraryFilter = { key: LibraryFilterKey; label: string };
+
 /** The five narrowing choices, each `all` until somebody picks something. */
 export type LibraryFilters = {
 	origin: string;
