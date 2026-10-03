@@ -2,6 +2,8 @@
 	import { onDestroy, onMount, untrack } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 
+	import { weightName } from '$lib/fonts/weights';
+
 	import type { GoogleFontArtifactSummary } from '$lib/bindings/GoogleFontArtifactSummary';
 	import type { GoogleFontFamilyDetails } from '$lib/bindings/GoogleFontFamilyDetails';
 	import type { GoogleFontFamilySummary } from '$lib/bindings/GoogleFontFamilySummary';
@@ -46,17 +48,6 @@
 	const DEFAULT_SPECIMEN_SIZE = 112;
 	const DEFAULT_SPECIMEN_WEIGHT = 400;
 	const WEIGHT_NOTE_LINGER_MS = 2600;
-	const WEIGHT_NAMES: Record<number, string> = {
-		100: 'Thin',
-		200: 'Extralight',
-		300: 'Light',
-		400: 'Regular',
-		500: 'Medium',
-		600: 'Semibold',
-		700: 'Bold',
-		800: 'Extrabold',
-		900: 'Black'
-	};
 	const DEFAULT_SORT = 'trending';
 	const SKELETON_ROWS = [0, 1, 2, 3];
 
@@ -703,10 +694,6 @@
 
 	function previewStatus(familyId: string): PreviewStatus {
 		return previewStatuses[familyId] ?? 'idle';
-	}
-
-	function weightName(weight: number): string {
-		return WEIGHT_NAMES[weight] ?? String(weight);
 	}
 
 	/**

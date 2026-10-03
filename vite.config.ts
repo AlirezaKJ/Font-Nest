@@ -47,6 +47,20 @@ export default defineConfig({
 					include: ['src/**/*.{test,spec}.{js,ts}'],
 					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
 				}
+			},
+			{
+				// Components, rendered. The server project deliberately excluded these from the
+				// start and nothing filled the gap, so anything a component decided for itself
+				// went untested. `browser` resolution matters: without it Svelte loads its server
+				// build, which renders once and never responds to anything.
+				extends: './vite.config.ts',
+				resolve: { conditions: ['browser'] },
+				test: {
+					name: 'client',
+					environment: 'jsdom',
+					include: ['src/**/*.svelte.{test,spec}.{js,ts}'],
+					setupFiles: ['./vitest-setup-client.ts']
+				}
 			}
 		]
 	}

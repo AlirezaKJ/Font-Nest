@@ -1,24 +1,5 @@
 <script lang="ts" module>
-	const WEIGHT_NAMES: Record<number, string> = {
-		100: 'Thin',
-		200: 'Extralight',
-		300: 'Light',
-		400: 'Regular',
-		500: 'Medium',
-		600: 'Semibold',
-		700: 'Bold',
-		800: 'Extrabold',
-		900: 'Black'
-	};
-
-	function weightName(weight: number): string {
-		const nearest = Object.keys(WEIGHT_NAMES)
-			.map(Number)
-			.reduce((closest, value) =>
-				Math.abs(value - weight) < Math.abs(closest - weight) ? value : closest
-			);
-		return WEIGHT_NAMES[nearest] ?? 'Regular';
-	}
+	import { nearestWeightName as weightName } from '$lib/fonts/weights';
 
 	const INITIAL_GLYPH_BATCH = 128;
 	const GLYPH_BATCH_SIZE = 256;
@@ -63,6 +44,7 @@
 </script>
 
 <script lang="ts">
+	import { nearestWeight } from '$lib/fonts/weights';
 	import { quintOut } from 'svelte/easing';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { slide } from 'svelte/transition';
@@ -209,14 +191,6 @@
 		return `${faceId}:${codepoint}:${variations
 			.map((variation) => `${variation.tag}=${variation.value.toFixed(3)}`)
 			.join(',')}`;
-	}
-
-	function nearestWeight(weights: number[], target: number): number {
-		return weights.reduce(
-			(closest, weight) =>
-				Math.abs(weight - target) < Math.abs(closest - target) ? weight : closest,
-			weights[0] ?? 400
-		);
 	}
 
 	let availableWeights = $derived(

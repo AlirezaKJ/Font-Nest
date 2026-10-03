@@ -42,6 +42,7 @@
 		isSystemOnly
 	} from '$lib/fonts/font-origin';
 	import { importReviewed, reviewChosenFonts } from '$lib/fonts/import';
+	import { nearestWeight, weightName } from '$lib/fonts/weights';
 	import { EMPTY_INVENTORY, formatBytes, refusalDetail } from '$lib/fonts/managed';
 	import { importLocalFontPreview, releaseLocalFontPreview } from '$lib/fonts/local-fonts';
 	import { hasUnseenRelease } from '$lib/release-notes/loader';
@@ -69,17 +70,6 @@
 	const DEFAULT_SPECIMEN_SIZE = 96;
 	const DEFAULT_SPECIMEN_WEIGHT = 400;
 	const WEIGHT_NOTE_LINGER_MS = 2600;
-	const WEIGHT_NAMES: Record<number, string> = {
-		100: 'Thin',
-		200: 'Extralight',
-		300: 'Light',
-		400: 'Regular',
-		500: 'Medium',
-		600: 'Semibold',
-		700: 'Bold',
-		800: 'Extrabold',
-		900: 'Black'
-	};
 	const MAX_DETAIL_FACES = 12;
 	const UPDATE_CHECK_DELAY_MS = 8_000;
 	const PREFERENCES_SAVE_DELAY_MS = 400;
@@ -641,18 +631,6 @@
 			return String(error.message);
 		}
 		return 'FontNest could not read the installed font catalogue. Try scanning again.';
-	}
-
-	function nearestWeight(weights: number[], target: number): number {
-		return weights.reduce(
-			(closest, weight) =>
-				Math.abs(weight - target) < Math.abs(closest - target) ? weight : closest,
-			weights[0] ?? 400
-		);
-	}
-
-	function weightName(weight: number): string {
-		return WEIGHT_NAMES[weight] ?? String(weight);
 	}
 
 	function selectFamily(familyId: string) {
